@@ -1,0 +1,10 @@
+lib
+__pycache__
+share
+bin
+include
+pyvenv.cfg
+.vscode
+*.npz
+*.lock
+.DS_Store
