@@ -21,8 +21,8 @@ ti.init(arch=ti.metal,
 
 
 NPART = int(1e5)
-NTIMES = 25
-NSTATES = 6
+NTIMES = 20
+NSTATES = 8
 sys.path.append('../tibfgs')
 os.environ['TI_DIM_X'] = str(NSTATES)
 os.environ['TI_NUM_PARTICLES'] = str(NPART)
@@ -33,10 +33,16 @@ import tater
 
 MAX_ANG_VEL_MAG = 3.0
 
-tspace = np.linspace(0, 6.0, NTIMES, dtype=np.float32)
-noise = np.random.randn(NTIMES) / 5
-lct = np.clip(np.sin(tspace * 2) + 1.0, 0, np.inf).astype(np.float32)
-print(lct)
+# tspace = np.linspace(0, 6.0, NTIMES, dtype=np.float32)
+# noise = np.random.randn(NTIMES) / 5
+# lct = np.clip(np.sin(tspace * 2) + 1.0, 0, np.inf).astype(np.float32)
+
+@ti.kernel
+def get_lc_true() -> tater.VLTYPE:
+    x0 = ti.Vector([1.0, 2.0, 3.0, 1.0, 1.0, 0.0, 1.0, 2.0])
+    lc = tater.compute_lc(x0)
+    return lc
+lct = get_lc_true().to_numpy()
 tater.load_lc_true(lct)
 
 # %%
@@ -68,6 +74,7 @@ res_field = ti.Struct.field(
 
 @ti.kernel
 def run() -> int:
+    ti.loop_config(block_dim=32)
     for i in range(NPART):
         x0 = tater.gen_x0(MAX_ANG_VEL_MAG)
         loss = tater.propagate_one(x0)
@@ -86,4 +93,4 @@ print(np.min(r['fun'][~np.isnan(r['fun'])]))
 
 np.savez('saved.npz', **r)
 
-# ti.profiler.print_scoped_profiler_info()
+ti.profiler.print_scoped_profiler_info()

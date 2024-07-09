@@ -1,6 +1,7 @@
 import numpy as np
 import taichi as ti
 import os
+import tibfgs
 
 NSTATES = int(os.environ["TI_DIM_X"])
 NTIMES = int(os.environ["TI_NUM_TIMES"])
@@ -145,11 +146,18 @@ def brdf_phong(
 @ti.func
 def compute_lc(x0: VSTYPE) -> VLTYPE:
     current_state = x0
+    itens = itensor
+    if ti.static(VSTYPE.n > 6):
+        itens.y = ti.abs(x0[6])
+    if ti.static(VSTYPE.n > 7):
+        itens.z = ti.abs(x0[7])
+
     lc = VLTYPE(0.0)
+    ti.loop_config(serialize=True)
     for j in range(lc.n):
         dcm = mrp_to_dcm(current_state[:3])
         lc[j] = normalized_convex_light_curve(dcm @ L, dcm @ O)
-        current_state = rk4_step(current_state, h, itensor)
+        current_state = rk4_step(current_state, h, itens)
     return lc
 
 
@@ -275,7 +283,11 @@ def propagate_one(x0: VSTYPE) -> ti.f32:
 def gen_x0(w_max) -> VSTYPE:
     x0 = VSTYPE(0.0)
     x0[:3] = quat_to_mrp(rand_s3())
-    x0[3:] = rand_b2(w_max)
+    x0[3:6] = rand_b2(w_max)
+    if ti.static(VSTYPE.n > 6): # iy
+        x0[6] = ti.random() * 3
+    if ti.static(VSTYPE.n > 7): # iz
+        x0[7] = ti.random() * 3
     return x0
 
 
