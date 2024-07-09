@@ -45,7 +45,7 @@ tater.load_lc_true(lc_true)
 def run() -> tater.VLTYPE:
     lc = tater.VLTYPE(0.0)
     for i in range(1):
-        x0 = ti.Vector([.3210547, 0.36888692, 0.02152033, -4.0643797, -0.27463922, 1.1969466])
+        x0 = ti.Vector([-0.8835819, -0.42102355, -0.064743236, -1.5945487, 0.07931882, 0.78442633])
         lc = tater.compute_lc(x0)
         loss = tater.compute_loss(lc)
     return lc

@@ -21,7 +21,7 @@ ti.init(arch=ti.metal,
         )
 
 
-NPART = int(1000_000)
+NPART = int(500_000)
 NTIMES = 20
 NSTATES = 6
 sys.path.append('../tibfgs')

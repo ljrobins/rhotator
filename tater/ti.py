@@ -22,6 +22,17 @@ def load_lc_true(lc_arr: np.ndarray):
     global lc_true
     lc_true = VLTYPE(lc_arr)
 
+def unique_areas_and_normals(fn: np.ndarray, fa: np.ndarray):
+    """Finds groups of unique normals and areas to save rows elsewhere"""
+    (
+        unique_normals,
+        all_to_unique,
+        unique_to_all,
+    ) = np.unique(np.round(fn, decimals=6), axis=0, return_index=True, return_inverse=True)
+    unique_areas = np.zeros((unique_normals.shape[0]))
+    np.add.at(unique_areas, unique_to_all, fa)
+    return unique_normals, unique_areas
+
 def load_obj(obj_path: str):
     import trimesh
     obj = trimesh.load(obj_path)
@@ -31,6 +42,8 @@ def load_obj(obj_path: str):
     fnn = np.cross(v2 - v1, v3 - v1)
     fan = np.linalg.norm(fnn, axis=1, keepdims=True) / 2
     fnn = fnn / fan / 2
+
+    fnn, fan = unique_areas_and_normals(fnn, fan.flatten())
 
     fa = ti.field(dtype=ti.f32, shape=fan.shape)
     fa.from_numpy(fan.astype(np.float32))
@@ -118,28 +131,58 @@ def compute_lc(x0: VSTYPE) -> VLTYPE:
     current_state = x0
     lc = VLTYPE(0.0)
     for j in range(lc.n):
-        q = mrp_to_quat(current_state[:3])
-        dcm = quat_to_dcm(q)
+        dcm = mrp_to_dcm(current_state[:3])
         lc[j] = normalized_convex_light_curve(dcm @ L, dcm @ O)
-        
-        q, current_state[3:] = rk4_step(q, current_state[3:], h, itensor)
-        q = q.normalized()
-        current_state[:3] = quat_to_mrp(q)
-
+        current_state = rk4_step(current_state, h, itensor)
     return lc
 
 @ti.func
-def rk4_step(q0, w0, h, itensor):
-    k1q, k1w = deriv(q0, w0, itensor)
-    k2q, k2w = deriv(q0 + h * k1q / 2, w0 + h * k1w / 2, itensor)
-    k3q, k3w = deriv(q0 + h * k2q / 2, w0 + h * k2w / 2, itensor)
-    k4q, k4w = deriv(q0 + h * k3q, w0 + h * k3w, itensor)
+def rk4_step(x0, h, itensor):
+    k1 = state_derivative_mrp(x0, itensor)
+    k2 = state_derivative_mrp(x0 + h * k1 / 2, itensor)
+    k3 = state_derivative_mrp(x0 + h * k2 / 2, itensor)
+    k4 = state_derivative_mrp(x0 + h * k3, itensor)
     return (
-        q0 + h * (k1q + 2 * k2q + 2 * k3q + k4q) / 6, 
-        w0 + h * (k1w + 2 * k2w + 2 * k3w + k4w) / 6)
+        x0 + h * (k1 + 2 * k2 + 2 * k3 + k4) / 6)
 
 @ti.func
-def deriv(q, w, itensor):
+def mrp_kde(s: ti.math.vec3, w: ti.math.vec3) -> ti.math.vec3:
+    s1, s2, s3 = s
+    s12 = s1**2
+    s22 = s2**2
+    s32 = s3**2
+
+    m = 1/4 * ti.math.mat3(
+        [1+s12-s22-s32, 2*(s1*s2-s3),  2*(s1*s3+s2)],
+        [2*(s1*s2+s3),  1-s12+s22-s32, 2*(s2*s3-s1)],
+        [2*(s1*s3-s2), 2*(s2*s3+s1),  1-s12-s22+s32]
+    )
+    return m @ w
+
+@ti.func
+def tilde(v: ti.math.vec3) -> ti.math.mat3:
+    v_tilde = ti.math.mat3(
+        [0.0, -v.z, v.y],
+        [v.z, 0.0, -v.x],
+        [-v.y, v.x, 0.0]
+    )
+    return v_tilde
+
+@ti.func
+def mrp_to_dcm(s: ti.math.vec3) -> ti.math.mat3:
+    s1, s2, s3 = s
+    s12 = s1**2
+    s22 = s2**2
+    s32 = s3**2
+    s2 = s12 + s22 + s32
+    
+    s_tilde = tilde(s)
+    eye = ti.math.mat3([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    c = eye + (8 * s_tilde @ s_tilde - 4 * (1 - s2)) / (1 + s2) ** 2
+    return c
+
+@ti.func
+def quat_kde(q: ti.math.vec4, w: ti.math.vec3) -> ti.math.vec4:
     qmat = 0.5 * ti.math.mat4(
             q[3], -q[2], q[1], q[0],
             q[2], q[3], -q[0], q[1],
@@ -147,12 +190,31 @@ def deriv(q, w, itensor):
             -q[0], -q[1], -q[2], q[3],
     )
     qdot = qmat @ ti.math.vec4(w.xyz, 0.0)
+    return qdot
 
-    wdot = ti.math.vec3(0.0, 0.0, 0.0)
+@ti.func
+def omega_dot(w: ti.math.vec3, itensor: ti.math.vec3) -> ti.math.vec3:
+    wdot = ti.math.vec3(0.0)
     wdot.x = -1 / itensor[0] * (itensor[2] - itensor[1]) * w.y * w.z
     wdot.y = -1 / itensor[1] * (itensor[0] - itensor[2]) * w.z * w.x
     wdot.z = -1 / itensor[2] * (itensor[1] - itensor[0]) * w.x * w.y
+    return wdot
 
+@ti.func
+def state_derivative_mrp(x, itensor):
+    xdot = 0 * x
+    s = x[:3]
+    w = x[3:6]
+    xdot[:3] = mrp_kde(s, w)
+    xdot[3:6] = omega_dot(w, itensor)
+    return xdot
+
+@ti.func
+def state_derivative_quat(x, itensor):
+    q = x[:4]
+    w = x[4:7]
+    qdot = quat_kde(q, w)
+    wdot = omega_dot(w, itensor)
     return qdot, wdot
 
 @ti.func
