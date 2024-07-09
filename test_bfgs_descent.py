@@ -3,38 +3,39 @@ import time
 import os
 import sys
 import numpy as np
+np.finfo(np.float32)
 
 import taichi as ti
 ti.init(arch=ti.metal,
         default_fp=ti.float32,
         cfg_optimization=False,
         offline_cache=True,
-        opt_level=2,
-        check_out_of_bound=False,
+        opt_level=1,
         fast_math=True,
         simplify_before_lower_access=False,
         lower_access=False,
         simplify_after_lower_access=False,
-        advanced_optimization=False,
         num_compile_threads=32,
-        make_block_local=True,
+        offline_cache_file_path='ticache'
         )
 
 
-NPART = int(5e5)
-NTIMES = 20
+NPART = int(1e5)
+NTIMES = 25
 NSTATES = 6
 sys.path.append('../tibfgs')
 os.environ['TI_DIM_X'] = str(NSTATES)
 os.environ['TI_NUM_PARTICLES'] = str(NPART)
 os.environ['TI_NUM_TIMES'] = str(NTIMES)
 import tibfgs
+
 import tater
 
 MAX_ANG_VEL_MAG = 3.0
 
-tspace = np.linspace(0, 4.0, NTIMES, dtype=np.float32)
-lct = np.clip(np.sin(tspace * 2) + 1.0 + np.random.randn(NTIMES) / 5, 0, np.inf).astype(np.float32)
+tspace = np.linspace(0, 6.0, NTIMES, dtype=np.float32)
+noise = np.random.randn(NTIMES) / 5
+lct = np.clip(np.sin(tspace * 2) + 1.0, 0, np.inf).astype(np.float32)
 print(lct)
 tater.load_lc_true(lct)
 

@@ -27,24 +27,25 @@ NSTATES = 6
 import sys
 sys.path.append('..')
 NPART = 1
-NTIMES = 20
+NTIMES = 25
 NSTATES = 6
 sys.path.append('../tibfgs')
 os.environ['TI_DIM_X'] = str(NSTATES)
 os.environ['TI_NUM_PARTICLES'] = str(NPART)
 os.environ['TI_NUM_TIMES'] = str(NTIMES)
 
+
 import tibfgs
 import tater
 
-tspace = np.linspace(0, 4.0, NTIMES, dtype=np.float32)
+tspace = np.linspace(0, 6.0, NTIMES, dtype=np.float32)
 lc_clean = np.sin(tspace * 2) + 1.0
 lc_true = np.clip(lc_clean + np.random.randn(NTIMES) / 5, 0, np.inf)
 tater.load_lc_true(lc_true)
 
 @ti.kernel
 def run() -> tater.VLTYPE:
-    x0 = ti.Vector([0.3354886, 0.36995652, -0.56847906, -0.16429211, 3.5236619, 1.4588528])
+    x0 = ti.Vector([-0.42594984, -0.5526155, -0.070913285, 0.3925352, 4.002883, -1.5416336])
     lc = tater.compute_lc(x0)
     loss = tater.compute_loss(lc)
     return lc
@@ -52,7 +53,7 @@ lc = run().to_numpy()
 
 import matplotlib.pyplot as plt
 
-plt.plot(lc)
-plt.plot(lc_true)
-plt.plot(lc_clean)
+plt.plot(tspace, lc)
+plt.plot(tspace, lc_true)
+plt.plot(tspace, lc_clean)
 plt.show()

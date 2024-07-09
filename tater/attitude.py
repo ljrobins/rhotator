@@ -1,11 +1,12 @@
 import taichi as ti
 from .jacobi import sn_cn_dn_am, elliptic_pi_incomplete, elliptic_inc_fm
 
+
 @ti.pyfunc
 def quat_inv(q: ti.math.vec4) -> ti.math.vec4:
     """Finds the quaternion inverse (conjugate for unit quaternions)
 
-    :param q: Input quaternion 
+    :param q: Input quaternion
     :type q: ti.math.vec4
     :return: Inverse quaternion
     :rtype: ti.math.vec4
@@ -13,6 +14,7 @@ def quat_inv(q: ti.math.vec4) -> ti.math.vec4:
     qinv = -q
     qinv[3] = -qinv[3]
     return qinv
+
 
 @ti.pyfunc
 def quat_add(q1: ti.math.vec4, q2: ti.math.vec4) -> ti.math.vec4:
@@ -25,13 +27,28 @@ def quat_add(q1: ti.math.vec4, q2: ti.math.vec4) -> ti.math.vec4:
     :return: Quaternion 13
     :rtype: ti.math.vec4
     """
-    q2dmat = ti.math.mat4(q2[3], q2[2], -q2[1], q2[0],
-            -q2[2], q2[3], q2[0], q2[1],
-            q2[1], -q2[0], q2[3], q2[2],
-            -q2[0], -q2[1], -q2[2], q2[3])
-    
+    q2dmat = ti.math.mat4(
+        q2[3],
+        q2[2],
+        -q2[1],
+        q2[0],
+        -q2[2],
+        q2[3],
+        q2[0],
+        q2[1],
+        q2[1],
+        -q2[0],
+        q2[3],
+        q2[2],
+        -q2[0],
+        -q2[1],
+        -q2[2],
+        q2[3],
+    )
+
     q12 = q2dmat @ q1
     return q12
+
 
 @ti.pyfunc
 def torque_free_attitude(
@@ -89,7 +106,6 @@ def torque_free_attitude(
         theta0 = ti.acos(hhat[2])
     else:
         theta0 = ti.acos(hhat[0])
-    
 
     (cT, sT, cT2, sT2) = (
         ti.cos(theta0),
@@ -199,10 +215,10 @@ def quat_r_from_eas(
             1
             / ti.sqrt(2 * (hz + 1))
             * ti.math.vec4(
-                    -(hz + 1) * st2 * cm - ct2 * (hx * sp - hy * cp),
-                    -(hz + 1) * st2 * sm - ct2 * (hx * cp + hy * sp),
-                    -(hz + 1) * ct2 * sp + st2 * (hx * cm + hy * sm),
-                    (hz + 1) * ct2 * cp + st2 * (hy * cm - hx * sm),
+                -(hz + 1) * st2 * cm - ct2 * (hx * sp - hy * cp),
+                -(hz + 1) * st2 * sm - ct2 * (hx * cp + hy * sp),
+                -(hz + 1) * ct2 * sp + st2 * (hx * cm + hy * sm),
+                (hz + 1) * ct2 * cp + st2 * (hy * cm - hx * sm),
             )
         )
     else:
@@ -210,10 +226,10 @@ def quat_r_from_eas(
             1
             / ti.sqrt(2 * (hx + 1))
             * ti.math.vec4(
-                    -(hx + 1) * ct2 * sp + st2 * (hz * cm - hy * sm),
-                    (hx + 1) * st2 * sm + ct2 * (hz * cp - hy * sp),
-                    -(hx + 1) * st2 * cm - ct2 * (hy * cp + hz * sp),
-                    (hx + 1) * ct2 * cp - st2 * (hy * cm + hz * sm),
+                -(hx + 1) * ct2 * sp + st2 * (hz * cm - hy * sm),
+                (hx + 1) * st2 * sm + ct2 * (hz * cp - hy * sp),
+                -(hx + 1) * st2 * cm - ct2 * (hy * cp + hz * sp),
+                (hx + 1) * ct2 * cp - st2 * (hy * cm + hz * sm),
             )
         )
     return q
@@ -270,7 +286,6 @@ def torque_free_angular_velocity(
     tau0 = elliptic_inc_fm(psi, ksquared)
     tau = tau_dot * teval + tau0
     (sn, cn, dn, _) = sn_cn_dn_am(tau, ti.sqrt(ksquared))
-
 
     wx = we * ti.sqrt(idyn * (iz - idyn) / (ix * (iz - ix))) * cn
     wy = ibig_neg * we * ti.sqrt(idyn * (iz - idyn) / (iy * (iz - iy))) * sn
