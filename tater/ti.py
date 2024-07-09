@@ -10,7 +10,6 @@ NTIMES = int(os.environ['TI_NUM_TIMES'])
 VSTYPE = ti.types.vector(n=NSTATES, dtype=ti.f32)
 VLTYPE = ti.types.vector(n=NTIMES, dtype=ti.f32)
 
-
 L = ti.Vector([1.0, 0.0, 0.0]).normalized()
 O = ti.Vector([1.0, 1.0, 0.0]).normalized()
 itensor = ti.Vector([1.0, 2.0, 3.0])
@@ -219,10 +218,12 @@ def state_derivative_quat(x, itensor):
 
 @ti.func
 def compute_loss(lc: VLTYPE) -> ti.f32:
-    # dp = ti.math.dot(lc.normalized(), lc_true.normalized())
+    # lcn = lc.normalized()
+    # dp = ti.math.dot(lcn, lc_true.normalized())
     # dpc = tibfgs.clip(dp, -1.0, 1.0)
-    # return ti.acos(dp)
-    return (lc-lc_true).norm()
+    # loss = ti.acos(dp)
+    # return loss
+    return (ti.math.log(lc+1.0)-ti.math.log(lc_true+1)).norm_sqr()
 
 @ti.func
 def propagate_one(x0: VSTYPE) -> ti.f32:

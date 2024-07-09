@@ -37,22 +37,22 @@ os.environ['TI_NUM_TIMES'] = str(NTIMES)
 import tibfgs
 import tater
 
-tspace = np.linspace(0, 1.0, NTIMES, dtype=np.float32)
-lc_true = np.sin(tspace * 2) + 0.3
+tspace = np.linspace(0, 4.0, NTIMES, dtype=np.float32)
+lc_clean = np.sin(tspace * 2) + 1.0
+lc_true = np.clip(lc_clean + np.random.randn(NTIMES) / 5, 0, np.inf)
 tater.load_lc_true(lc_true)
 
 @ti.kernel
 def run() -> tater.VLTYPE:
-    lc = tater.VLTYPE(0.0)
-    for i in range(1):
-        x0 = ti.Vector([-0.8835819, -0.42102355, -0.064743236, -1.5945487, 0.07931882, 0.78442633])
-        lc = tater.compute_lc(x0)
-        loss = tater.compute_loss(lc)
+    x0 = ti.Vector([0.3354886, 0.36995652, -0.56847906, -0.16429211, 3.5236619, 1.4588528])
+    lc = tater.compute_lc(x0)
+    loss = tater.compute_loss(lc)
     return lc
 lc = run().to_numpy()
 
 import matplotlib.pyplot as plt
 
-plt.plot(lc / np.linalg.norm(lc))
-plt.plot(lc_true / np.linalg.norm(lc_true))
+plt.plot(lc)
+plt.plot(lc_true)
+plt.plot(lc_clean)
 plt.show()
