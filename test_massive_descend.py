@@ -3,18 +3,22 @@ import numpy as np
 import time
 import trimesh
 from alive_progress import alive_bar
-from scipy.optimize import minimize
 
 
-obj = trimesh.load('/Users/liamrobinson/Documents/mirage/mirage/resources/models/cube.obj')
+obj = trimesh.load(
+    "/Users/liamrobinson/Documents/mirage/mirage/resources/models/cube.obj"
+)
 
-ti.init(arch=ti.gpu, 
-        default_fp=ti.float32,
-        fast_math=True,
-        advanced_optimization=True,
-        num_compile_threads=32,
-        opt_level=3,
-        unrolling_limit=0)
+ti.init(
+    arch=ti.gpu,
+    default_fp=ti.float32,
+    fast_math=True,
+    advanced_optimization=True,
+    num_compile_threads=32,
+    opt_level=3,
+    unrolling_limit=0,
+)
+
 
 def vecnorm(v: np.ndarray) -> np.ndarray:
     """Takes the :math:`L_2` norm of the rows of ``v``
@@ -41,6 +45,7 @@ def dot(v1: np.ndarray, v2: np.ndarray) -> np.ndarray:
     axis = v1.ndim - 1
     return np.sum(v1 * v2, axis=axis, keepdims=True)
 
+
 def hat(v: np.ndarray) -> np.ndarray:
     """Normalizes input np.ndarray n,3 such that each row is unit length. If a row is ``[0,0,0]``, ``hat()`` returns it unchanged
 
@@ -57,6 +62,7 @@ def hat(v: np.ndarray) -> np.ndarray:
 @ti.func
 def rand_b2(r: float) -> ti.math.vec3:
     return r * rand_s2() * ti.random() ** (1 / 3)
+
 
 @ti.func
 def rand_s2() -> ti.math.vec3:
@@ -75,11 +81,18 @@ def rand_s3() -> ti.math.vec4:
 def quat_to_dcm(q: ti.math.vec4) -> ti.math.mat3:
     q0, q1, q2, q3 = q[0], q[1], q[2], q[3]
     C = ti.math.mat3(
-        1 - 2 * q1**2 - 2 * q2**2, 2 * (q0 * q1 + q2 * q3), 2 * (q0 * q2 - q1 * q3), 
-        2 * (q0 * q1 - q2 * q3), 1 - 2 * q0**2 - 2 * q2**2, 2 * (q1 * q2 + q0 * q3), 
-        2 * (q0 * q2 + q1 * q3), 2 * (q1 * q2 - q0 * q3), 1 - 2 * q0**2 - 2 * q1**2
+        1 - 2 * q1**2 - 2 * q2**2,
+        2 * (q0 * q1 + q2 * q3),
+        2 * (q0 * q2 - q1 * q3),
+        2 * (q0 * q1 - q2 * q3),
+        1 - 2 * q0**2 - 2 * q2**2,
+        2 * (q1 * q2 + q0 * q3),
+        2 * (q0 * q2 + q1 * q3),
+        2 * (q1 * q2 - q0 * q3),
+        1 - 2 * q0**2 - 2 * q1**2,
     )
     return C.transpose()
+
 
 @ti.func
 def normalized_convex_light_curve(L: ti.math.vec3, O: ti.math.vec3) -> float:
@@ -89,9 +102,11 @@ def normalized_convex_light_curve(L: ti.math.vec3, O: ti.math.vec3) -> float:
         b += fr * rdot(fn[i], O) * rdot(fn[i], L)
     return b
 
+
 @ti.func
 def rdot(v1, v2) -> float:
-    return ti.max(ti.math.dot(v1,v2), 0.0)
+    return ti.max(ti.math.dot(v1, v2), 0.0)
+
 
 @ti.func
 def brdf_phong(
@@ -110,6 +125,7 @@ def brdf_phong(
     fs = cs * (n + 2) / (2 * np.pi) * rdot(R, O) ** n / NdL
     return fd + fs
 
+
 @ti.kernel
 def integrate(itensor: ti.math.vec3, perturb_axis: int) -> int:
     h = teval[1] - teval[0]
@@ -123,11 +139,14 @@ def integrate(itensor: ti.math.vec3, perturb_axis: int) -> int:
 
             dcm = quat_to_dcm(current_states[i][:4])
             lc[i][j] = normalized_convex_light_curve(dcm @ L, dcm @ O)
-            
-            current_states[i][:4], current_states[i][4:] = rk4_step(current_states[i][:4], current_states[i][4:], h, itensor)
+
+            current_states[i][:4], current_states[i][4:] = rk4_step(
+                current_states[i][:4], current_states[i][4:], h, itensor
+            )
             current_states[i][:4] = current_states[i][:4].normalized()
 
-    return 0 # to prevent taichi from lying about timing
+    return 0  # to prevent taichi from lying about timing
+
 
 @ti.pyfunc
 def rk4_step(q0, w0, h, itensor):
@@ -136,16 +155,30 @@ def rk4_step(q0, w0, h, itensor):
     k3q, k3w = deriv(q0 + h * k2q / 2, w0 + h * k2w / 2, itensor)
     k4q, k4w = deriv(q0 + h * k3q, w0 + h * k3w, itensor)
     return (
-        q0 + h * (k1q + 2 * k2q + 2 * k3q + k4q) / 6, 
-        w0 + h * (k1w + 2 * k2w + 2 * k3w + k4w) / 6)
+        q0 + h * (k1q + 2 * k2q + 2 * k3q + k4q) / 6,
+        w0 + h * (k1w + 2 * k2w + 2 * k3w + k4w) / 6,
+    )
+
 
 @ti.pyfunc
 def deriv(q, w, itensor):
     qmat = 0.5 * ti.math.mat4(
-            q[3], -q[2], q[1], q[0],
-            q[2], q[3], -q[0], q[1],
-            -q[1], q[0], q[3], q[2],
-            -q[0], -q[1], -q[2], q[3],
+        q[3],
+        -q[2],
+        q[1],
+        q[0],
+        q[2],
+        q[3],
+        -q[0],
+        q[1],
+        -q[1],
+        q[0],
+        q[3],
+        q[2],
+        -q[0],
+        -q[1],
+        -q[2],
+        q[3],
     )
     qdot = qmat @ ti.math.vec4(w.xyz, 0.0)
 
@@ -157,9 +190,9 @@ def deriv(q, w, itensor):
     return qdot, wdot
 
 
-v1 = obj.vertices[obj.faces[:,0]]
-v2 = obj.vertices[obj.faces[:,1]]
-v3 = obj.vertices[obj.faces[:,2]]
+v1 = obj.vertices[obj.faces[:, 0]]
+v2 = obj.vertices[obj.faces[:, 1]]
+v3 = obj.vertices[obj.faces[:, 2]]
 fnn = np.cross(v2 - v1, v3 - v1)
 fan = np.linalg.norm(fnn, axis=1, keepdims=True) / 2
 fnn = fnn / fan / 2
@@ -192,7 +225,7 @@ EPSILON = 1e-6
 n_particles = int(1e4)
 n_times = 50
 tmax = 10.0
-states = ['qx', 'qy', 'qz', 'qw', 'wx', 'wy', 'wx']
+states = ["qx", "qy", "qz", "qw", "wx", "wy", "wx"]
 n_states = len(states)
 tspace = np.linspace(0, tmax, n_times, dtype=np.float32)
 h = tspace[1] - tspace[0]
@@ -208,11 +241,12 @@ lc_true = ti.field(shape=teval.shape[0], dtype=ti.f32)
 lct = np.sin(tspace / 10) * 0 + 0.3
 lc_true.from_numpy(hat(lct))
 
-loss = ti.field(dtype=ti.f32, shape=(n_particles,n_states+1)) 
+loss = ti.field(dtype=ti.f32, shape=(n_particles, n_states + 1))
 
 
 # %%
 # Initializing the quaternion and angular velocity guesses
+
 
 @ti.kernel
 def initialize_states() -> int:
@@ -221,6 +255,7 @@ def initialize_states() -> int:
         initial_states[i][4:] = rand_b2(MAX_ANG_VEL_MAG)
         current_states[i] = initial_states[i]
     return 0
+
 
 @ti.kernel
 def reset_states() -> int:
@@ -231,42 +266,47 @@ def reset_states() -> int:
 
 @ti.kernel
 def compute_loss(perturbed_state_ind: int) -> int:
-    # Computing local loss 
+    # Computing local loss
     for i in range(loss.shape[0]):
         lci_norm = lc[i].norm()
-        loss[i,perturbed_state_ind] = 0.0
+        loss[i, perturbed_state_ind] = 0.0
         for j in range(lc_true.shape[0]):
-            loss[i,perturbed_state_ind] += lc[i][j]/lci_norm * lc_true[j]
-        loss[i,perturbed_state_ind] = ti.acos(loss[i,perturbed_state_ind])
+            loss[i, perturbed_state_ind] += lc[i][j] / lci_norm * lc_true[j]
+        loss[i, perturbed_state_ind] = ti.acos(loss[i, perturbed_state_ind])
     return 0
+
 
 @ti.kernel
 def update_states() -> int:
     for i in range(loss.shape[0]):
         initial_states[i] += states_v[i]
-        initial_states[i][:4] = initial_states[i][:4].normalized() # make sure the quaternion keeps its norm
+        initial_states[i][:4] = initial_states[i][
+            :4
+        ].normalized()  # make sure the quaternion keeps its norm
     return 0
 
 
 def update_istate(current_istates, delta_x, current_step_size, fprime_current):
     delta_state = -current_step_size * fprime_current
     new_istate = current_istates + delta_state
-    new_istate[:,:4] /= np.linalg.norm(new_istate[:,:4], axis=1, keepdims=True)
+    new_istate[:, :4] /= np.linalg.norm(new_istate[:, :4], axis=1, keepdims=True)
 
-    breaking_ang_limits = np.linalg.norm(new_istate[:,4:7], axis=1) > MAX_ANG_VEL_MAG
-    new_istate[breaking_ang_limits,4:7] *= MAX_ANG_VEL_MAG / np.linalg.norm(new_istate[breaking_ang_limits,4:7], axis=1, keepdims=True) 
+    breaking_ang_limits = np.linalg.norm(new_istate[:, 4:7], axis=1) > MAX_ANG_VEL_MAG
+    new_istate[breaking_ang_limits, 4:7] *= MAX_ANG_VEL_MAG / np.linalg.norm(
+        new_istate[breaking_ang_limits, 4:7], axis=1, keepdims=True
+    )
     return new_istate
 
 
 def compute_gradient_from_losses(current_istates, losses):
-    fprime = (losses[:,1:]-losses[:,[0]])/FINITE_DIFF_STATE_PERTURB
-    fprime[:,:4] -= dot(fprime[:,:4], current_istates[:,:4]) * current_istates[:,:4]
+    fprime = (losses[:, 1:] - losses[:, [0]]) / FINITE_DIFF_STATE_PERTURB
+    fprime[:, :4] -= dot(fprime[:, :4], current_istates[:, :4]) * current_istates[:, :4]
     return fprime
 
 
 prev_state = initial_states.to_numpy()
 prev_gradient = np.zeros((n_particles, n_states))
-current_step_size = np.full((n_particles,1), 1e-2)
+current_step_size = np.full((n_particles, 1), 1e-2)
 
 n_iter = 150
 losses = np.zeros((n_iter, n_particles))
@@ -278,24 +318,26 @@ with alive_bar(n_iter) as bar:
             initialize_states()
 
         t1 = time.time()
-        for pstate in range(-1,n_states):
+        for pstate in range(-1, n_states):
             reset_states()
             integrate(itensor, pstate)
-            compute_loss(pstate+1)
+            compute_loss(pstate + 1)
         # print(f'int time: {time.time()-t1:.1e}')
-        
+
         t1 = time.time()
         # print(f'loss time: {time.time()-t1:.1e}')
         t1 = time.time()
         l = loss.to_numpy()
-        losses[i] = l[:,0]
+        losses[i] = l[:, 0]
 
         current_istate = initial_states.to_numpy()
-        states[i,:,:] = current_istate
+        states[i, :, :] = current_istate
         current_fprime = compute_gradient_from_losses(current_istate, l)
 
         if i == 0:
-            new_istate = update_istate(current_istate, 0*current_istate, current_step_size, current_fprime)
+            new_istate = update_istate(
+                current_istate, 0 * current_istate, current_step_size, current_fprime
+            )
             delta_x = new_istate - current_istate
             old_fprime = current_fprime
         else:
@@ -305,27 +347,31 @@ with alive_bar(n_iter) as bar:
             xx = np.sum(np.abs(delta_x * delta_x), axis=1, keepdims=True)
             xg = np.sum(np.abs(delta_x * delta_fprime), axis=1, keepdims=True)
             gg = np.sum(np.abs(delta_fprime * delta_fprime), axis=1, keepdims=True)
-            
+
             # long
             current_step_size = xx / xg
             # short
             # current_step_size = xg / gg
-            new_istate = update_istate(current_istate, delta_x, current_step_size, current_fprime)
+            new_istate = update_istate(
+                current_istate, delta_x, current_step_size, current_fprime
+            )
 
-        new_istate[np.isnan(new_istate[:,0]),:] = prev_state[np.isnan(new_istate[:,0]),:]
+        new_istate[np.isnan(new_istate[:, 0]), :] = prev_state[
+            np.isnan(new_istate[:, 0]), :
+        ]
         initial_states.from_numpy(new_istate.astype(np.float32))
-        print(f'med grad mag: {np.median(np.linalg.norm(current_fprime, axis=1)):.1e}')
+        print(f"med grad mag: {np.median(np.linalg.norm(current_fprime, axis=1)):.1e}")
         # if np.isnan(l).sum():
         #     print(prev_state[np.isnan(l[:,0]),:])
         #     print(states[i-1, np.isnan(l[:,0]),:])
         #     print(prev_gradient[np.isnan(l[:,0]),:])
         #     endd
-        print(f'mean loss: {l.mean():.2f} min loss: {l.min():.1e}')
+        print(f"mean loss: {l.mean():.2f} min loss: {l.min():.1e}")
         # update_states()
         # print(f'update time: {time.time()-t1:.1e}')
 
         bar()
-    
+
 import matplotlib.pyplot as plt
 # plt.plot(losses)
 # plt.yscale('log')
@@ -333,18 +379,18 @@ import matplotlib.pyplot as plt
 
 fpmag = vecnorm(current_fprime)
 
-states = states[:,fpmag.flatten() < 100,:]
+states = states[:, fpmag.flatten() < 100, :]
 
-plt.scatter(states[0,:,0], states[0,:,1], s=1, alpha=0.3, c='k')
-plt.scatter(states[-1,:,0], states[-1,:,1], s=1, alpha=0.3, c='r')
+plt.scatter(states[0, :, 0], states[0, :, 1], s=1, alpha=0.3, c="k")
+plt.scatter(states[-1, :, 0], states[-1, :, 1], s=1, alpha=0.3, c="r")
 plt.show()
 
-plt.hist(fpmag, bins=np.geomspace(1e-5,1e2,100))
-plt.xscale('log')
+plt.hist(fpmag, bins=np.geomspace(1e-5, 1e2, 100))
+plt.xscale("log")
 plt.show()
 
-plt.hist(losses[-1,:], bins=np.geomspace(1e-5,1e2,100))
-plt.xscale('log')
+plt.hist(losses[-1, :], bins=np.geomspace(1e-5, 1e2, 100))
+plt.xscale("log")
 plt.show()
 
 # for i in range(states.shape[-1]):

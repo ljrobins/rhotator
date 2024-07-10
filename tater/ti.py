@@ -1,7 +1,6 @@
 import numpy as np
 import taichi as ti
 import os
-import tibfgs
 
 NSTATES = int(os.environ["TI_DIM_X"])
 NTIMES = int(os.environ["TI_NUM_TIMES"])
@@ -83,32 +82,8 @@ def rand_s3() -> ti.math.vec4:
 
 
 @ti.func
-def mrp_to_quat(s: ti.math.vec3) -> ti.math.vec4:
-    s2 = s.norm_sqr()
-    v = 2 * s / (1 + s2)
-    return ti.math.vec4([v.x, v.y, v.z, (1 - s2) / (1 + s2)])
-
-
-@ti.func
 def quat_to_mrp(q: ti.math.vec4) -> ti.math.vec3:
     return q[:3] / (q[3] + 1)
-
-
-@ti.func
-def quat_to_dcm(q: ti.math.vec4) -> ti.math.mat3:
-    q0, q1, q2, q3 = q[0], q[1], q[2], q[3]
-    C = ti.math.mat3(
-        1 - 2 * q1**2 - 2 * q2**2,
-        2 * (q0 * q1 + q2 * q3),
-        2 * (q0 * q2 - q1 * q3),
-        2 * (q0 * q1 - q2 * q3),
-        1 - 2 * q0**2 - 2 * q2**2,
-        2 * (q1 * q2 + q0 * q3),
-        2 * (q0 * q2 + q1 * q3),
-        2 * (q1 * q2 - q0 * q3),
-        1 - 2 * q0**2 - 2 * q1**2,
-    )
-    return C
 
 
 @ti.func
@@ -284,9 +259,9 @@ def gen_x0(w_max) -> VSTYPE:
     x0 = VSTYPE(0.0)
     x0[:3] = quat_to_mrp(rand_s3())
     x0[3:6] = rand_b2(w_max)
-    if ti.static(VSTYPE.n > 6): # iy
+    if ti.static(VSTYPE.n > 6):  # iy
         x0[6] = ti.random() * 3
-    if ti.static(VSTYPE.n > 7): # iz
+    if ti.static(VSTYPE.n > 7):  # iz
         x0[7] = ti.random() * 3
     return x0
 

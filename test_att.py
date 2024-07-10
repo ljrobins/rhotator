@@ -1,29 +1,31 @@
 import taichi as ti
-import os, sys
+import os
+import sys
 
 ti.init(arch=ti.cpu)
 
 NPART = int(1e5)
 NTIMES = 25
 NSTATES = 6
-sys.path.append('../tibfgs')
-os.environ['TI_DIM_X'] = str(NSTATES)
-os.environ['TI_NUM_PARTICLES'] = str(NPART)
-os.environ['TI_NUM_TIMES'] = str(NTIMES)
-import tibfgs
+sys.path.append("../tibfgs")
+os.environ["TI_DIM_X"] = str(NSTATES)
+os.environ["TI_NUM_PARTICLES"] = str(NPART)
+os.environ["TI_NUM_TIMES"] = str(NTIMES)
 
 import tater
-import numpy as np
 
 NSTEP = 20
+
 
 @ti.kernel
 def test():
     s = ti.math.vec3([1.0, 2.0, 3.0])
     print(tater.mrp_to_dcm(s))
 
+
 itensor = ti.Vector([1.0, 2.0, 3.0])
 h = 0.1
+
 
 @ti.kernel
 def prop_att(x0: ti.types.vector(n=6, dtype=ti.f32)):
@@ -39,4 +41,6 @@ def prop_att(x0: ti.types.vector(n=6, dtype=ti.f32)):
         v = tater.normalized_convex_light_curve(ell, oh)
         print(ell, oh, v)
         current_state = tater.rk4_step(current_state, h, itensor)
+
+
 prop_att(ti.Vector([1.0, 2.0, 3.0, 1.0, 1.0, 1.0]))
