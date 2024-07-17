@@ -1,68 +1,13 @@
-import numpy as np
 import taichi as ti
 import os
+import numpy as np
+import trimesh
 
 NSTATES = int(os.environ["TI_DIM_X"])
 NTIMES = int(os.environ["TI_NUM_TIMES"])
 
-VSTYPE = ti.types.vector(n=NSTATES, dtype=ti.f32)
-VLTYPE = ti.types.vector(n=NTIMES, dtype=ti.f32)
-
-L = ti.Vector([1.0, 0.0, 0.0]).normalized()
-O = ti.Vector([1.0, 1.0, 0.0]).normalized()
-itensor = ti.Vector([1.0, 2.0, 3.0])
-
 h: ti.f32 = 1.0 / NTIMES
-
-lc_true = None
-
-
-def load_lc_true(lc_arr: np.ndarray):
-    global lc_true
-    lc_true = VLTYPE(lc_arr)
-
-
-def unique_areas_and_normals(fn: np.ndarray, fa: np.ndarray):
-    """Finds groups of unique normals and areas to save rows elsewhere"""
-    (
-        unique_normals,
-        all_to_unique,
-        unique_to_all,
-    ) = np.unique(
-        np.round(fn, decimals=6), axis=0, return_index=True, return_inverse=True
-    )
-    unique_areas = np.zeros((unique_normals.shape[0]), dtype=np.float32)
-    np.add.at(unique_areas, unique_to_all, fa)
-    return unique_normals, unique_areas
-
-
-def load_obj(obj_path: str):
-    import trimesh
-
-    obj = trimesh.load(obj_path)
-    v1 = obj.vertices[obj.faces[:, 0]].astype(np.float32)
-    v2 = obj.vertices[obj.faces[:, 1]].astype(np.float32)
-    v3 = obj.vertices[obj.faces[:, 2]].astype(np.float32)
-    fnn = np.cross(v2 - v1, v3 - v1)
-    fan = np.linalg.norm(fnn, axis=1, keepdims=True).astype(np.float32) / 2
-    fnn = fnn / fan / 2
-
-    fnn, fan = unique_areas_and_normals(fnn, fan.flatten())
-
-    fa = ti.field(dtype=ti.f32, shape=fan.shape)
-    fa.from_numpy(fan)
-
-    fn = ti.Vector.field(n=3, dtype=ti.f32, shape=fnn.shape[0])
-    fn.from_numpy(fnn)
-
-    fd = ti.field(dtype=ti.f32, shape=fnn.shape[0])
-    fd.fill(0.5)
-    fs = ti.field(dtype=ti.f32, shape=fnn.shape[0])
-    fs.fill(0.5)
-    fp = ti.field(dtype=ti.f32, shape=fnn.shape[0])
-    fp.fill(3)
-
-    return fa, fn, fd, fs, fp
+itensor = ti.Vector([1.0, 2.0, 3.0])
 
 
 @ti.func
@@ -110,24 +55,27 @@ def brdf_phong(
     n: float,
 ) -> float:
     NdL = ti.math.dot(N, L)
+    fr: ti.f32 = ti.math.nan
     if NdL <= 1e-5:
-        NdL = np.inf
-    R = (2 * NdL * N - L).normalized()
-    fd = cd / np.pi
-    fs = cs * (n + 2) / (2 * np.pi) * rdot(R, O) ** n / NdL
-    return fd + fs
+        fr = 0.0
+    if ti.math.isnan(fr):
+        R = (2 * NdL * N - L).normalized()
+        fd = cd / ti.math.pi
+        fs = cs * (n + 2) / (2 * ti.math.pi) * rdot(R, O) ** n / NdL
+        fr = fd + fs
+    return fr
 
 
 @ti.func
-def compute_lc(x0: VSTYPE) -> VLTYPE:
+def compute_lc(x0: ti.template()) -> ti.template():
     current_state = x0
     itens = itensor
-    if ti.static(VSTYPE.n > 6):
+    if ti.static(x0.n > 6):
         itens.y = ti.abs(x0[6])
-    if ti.static(VSTYPE.n > 7):
+    if ti.static(x0.n > 7):
         itens.z = ti.abs(x0[7])
 
-    lc = VLTYPE(0.0)
+    lc = ti.types.vector(n=NTIMES, dtype=ti.f32)(0.0)
     ti.loop_config(serialize=True)
     for j in range(lc.n):
         dcm = mrp_to_dcm(current_state[:3])
@@ -237,7 +185,7 @@ def state_derivative_quat(x, itensor):
 
 
 @ti.func
-def compute_loss(lc: VLTYPE) -> ti.f32:
+def compute_loss(lc: ti.template()) -> ti.f32:
     # lcn = lc.normalized()
     # dp = ti.math.dot(lcn, lc_true.normalized())
     # dpc = tibfgs.clip(dp, -1.0, 1.0)
@@ -248,24 +196,77 @@ def compute_loss(lc: VLTYPE) -> ti.f32:
 
 
 @ti.func
-def propagate_one(x0: VSTYPE) -> ti.f32:
+def propagate_one(x0: ti.template()) -> ti.f32:
     lc = compute_lc(x0)
     loss = compute_loss(lc)
     return loss
 
 
 @ti.func
-def gen_x0(w_max) -> VSTYPE:
-    x0 = VSTYPE(0.0)
+def gen_x0(w_max: ti.f32) -> ti.template():
+    x0 = ti.types.vector(n=NSTATES, dtype=ti.f32)(0.0)
     x0[:3] = quat_to_mrp(rand_s3())
     x0[3:6] = rand_b2(w_max)
-    if ti.static(VSTYPE.n > 6):  # iy
+    if ti.static(x0.n > 6):  # iy
         x0[6] = ti.random() * 3
-    if ti.static(VSTYPE.n > 7):  # iz
+    if ti.static(x0.n > 7):  # iz
         x0[7] = ti.random() * 3
     return x0
 
 
-fa, fn, fd, fs, fp = load_obj(
-    "/Users/liamrobinson/Documents/mirage/mirage/resources/models/cube.obj"
-)
+lc_true = None
+
+
+def load_lc_true(lc_arr: np.ndarray):
+    global lc_true
+    lc_true = ti.types.vector(n=NTIMES, dtype=ti.f32)(lc_arr)
+
+
+L = None
+O = None
+
+
+def load_observation_geometry(svi: np.ndarray, ovi: np.ndarray) -> None:
+    global L, O
+    L = ti.math.vec3(svi).normalized()
+    O = ti.math.vec3(ovi).normalized()
+
+
+def unique_areas_and_normals(fn: np.ndarray, fa: np.ndarray):
+    """Finds groups of unique normals and areas to save rows elsewhere"""
+    (
+        unique_normals,
+        all_to_unique,
+        unique_to_all,
+    ) = np.unique(
+        np.round(fn, decimals=6), axis=0, return_index=True, return_inverse=True
+    )
+    unique_areas = np.zeros((unique_normals.shape[0]), dtype=np.float32)
+    np.add.at(unique_areas, unique_to_all, fa)
+    return unique_normals, unique_areas
+
+
+def load_obj(obj_path: str) -> None:
+    global fa, fn, fd, fs, fp
+    obj = trimesh.load(obj_path)
+    v1 = obj.vertices[obj.faces[:, 0]].astype(np.float32)
+    v2 = obj.vertices[obj.faces[:, 1]].astype(np.float32)
+    v3 = obj.vertices[obj.faces[:, 2]].astype(np.float32)
+    fnn = np.cross(v2 - v1, v3 - v1)
+    fan = np.linalg.norm(fnn, axis=1, keepdims=True).astype(np.float32) / 2
+    fnn = fnn / fan / 2
+
+    fnn, fan = unique_areas_and_normals(fnn, fan.flatten())
+
+    fa = ti.field(dtype=ti.f32, shape=fan.shape)
+    fa.from_numpy(fan)
+
+    fn = ti.Vector.field(n=3, dtype=ti.f32, shape=fnn.shape[0])
+    fn.from_numpy(fnn)
+
+    fd = ti.field(dtype=ti.f32, shape=fnn.shape[0])
+    fd.fill(0.5)
+    fs = ti.field(dtype=ti.f32, shape=fnn.shape[0])
+    fs.fill(0.5)
+    fp = ti.field(dtype=ti.f32, shape=fnn.shape[0])
+    fp.fill(3)

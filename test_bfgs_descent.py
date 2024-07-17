@@ -1,102 +1,32 @@
-import time
-import os
 import sys
 import numpy as np
 
-np.finfo(np.float32)
-import matplotlib.pyplot as plt
+sys.path.append("../tibfgs")
 
 import taichi as ti
-
-ti.init(
-    arch=ti.metal,
-    default_fp=ti.float32,
-    num_compile_threads=4,
-)
-
-
-NPART = int(1e5)
-NTIMES = 32
-NSTATES = 8
-sys.path.append("../tibfgs")
-os.environ["TI_DIM_X"] = str(NSTATES)
-os.environ["TI_NUM_PARTICLES"] = str(NPART)
-os.environ["TI_NUM_TIMES"] = str(NTIMES)
+import tater
 import tibfgs
 
-import tater
+t = np.linspace(0, 10, 30)
+lc_true = np.sin(t) + 1
+x0 = np.random.rand(1, 6)
 
-MAX_ANG_VEL_MAG = 3.0
+svi = np.array([1.0, 0.0, 0.0])
+ovi = np.array([1.0, 1.0, 0.0])
+obj_path = "/Users/liamrobinson/Documents/mirage/mirage/resources/models/cube.obj"
 
-# tspace = np.linspace(0, 6.0, NTIMES, dtype=np.float32)
-# noise = np.random.randn(NTIMES) / 5
-# lct = np.clip(np.sin(tspace * 2) + 1.0, 0, np.inf).astype(np.float32)
+tater.initialize(obj_path, svi, ovi, lc_true, x0)
+x0 = tater.generate_initial_states(int(1e3))
 
+res = tibfgs.minimize(tater.core.propagate_one, x0)
 
-@ti.kernel
-def get_lc_true() -> tater.VLTYPE:
-    x0 = ti.Vector([1.0, 2.0, 3.0, 1.0, 4.0, 0.0, 1.0, 2.0])
-    lc = tater.compute_lc(x0)
-    return lc
-
-
-lct = get_lc_true().to_numpy()
-tater.load_lc_true(lct)
-plt.plot(lct)
-plt.show()
-
-# %%
-# Initializing the quaternion and angular velocity guesses
+print(res.sort("fun"))
 
 
-tibfgs.set_f(tater.propagate_one)
+fvals = res["fun"].to_numpy()
+print(np.sum(np.isnan(fvals)))
+print(np.min(fvals[~np.isnan(fvals)]))
 
-res = ti.types.struct(
-    x0=tibfgs.VTYPE,
-    fun=ti.f32,
-    jac=tibfgs.VTYPE,
-    hess_inv=tibfgs.MTYPE,
-    status=ti.u8,
-    xk=tibfgs.VTYPE,
-    k=ti.u32,
-)
-
-res_field = ti.Struct.field(
-    dict(
-        x0=tibfgs.VTYPE,
-        fun=ti.f32,
-        jac=tibfgs.VTYPE,
-        hess_inv=tibfgs.MTYPE,
-        status=ti.u8,
-        xk=tibfgs.VTYPE,
-        k=ti.u32,
-    ),
-    shape=(tibfgs.NPART,),
-)
-
-
-@ti.kernel
-def run() -> int:
-    for i in range(NPART):
-        x0 = tater.gen_x0(MAX_ANG_VEL_MAG)
-        fval, gfk, Hk, warnflag, xk, k = tibfgs.minimize_bfgs(
-            i=i, x0=x0, gtol=1e-3, eps=1e-6, maxiter=100
-        )
-        res_field[i] = res(
-            x0=x0, fun=fval, jac=gfk, hess_inv=Hk, status=warnflag, xk=xk, k=k
-        )
-    return 0
-
-
-t1 = time.time()
-run()
-print(time.time() - t1)
-
-r = res_field.to_numpy()
-
-print(np.sum(np.isnan(r["fun"])))
-print(np.min(r["fun"][~np.isnan(r["fun"])]))
-
-np.savez("saved.npz", **r)
+res.write_parquet("saved.parquet")
 
 ti.profiler.print_scoped_profiler_info()
