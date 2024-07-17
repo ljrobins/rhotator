@@ -10,3 +10,4 @@ pyvenv.cfg
 .DS_Store
 ticache
 .ticache
+*.parquet

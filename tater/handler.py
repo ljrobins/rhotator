@@ -3,6 +3,14 @@ import taichi as ti
 import os
 from tibfgs import init_ti
 
+def compute_light_curves(x0s: np.ndarray) -> np.ndarray:
+    from .core import _compute_light_curves, NTIMES
+
+    x0s_ti = ti.field(dtype=ti.types.vector(n=x0s.shape[1], dtype=ti.f32), shape=x0s.shape[0])
+    x0s_ti.from_numpy(x0s)
+    lcs = ti.field(dtype=ti.types.vector(n=NTIMES, dtype=ti.f32), shape=x0s.shape[0])
+    _compute_light_curves(x0s_ti, lcs)
+    return lcs.to_numpy()
 
 def generate_initial_states(
     n_particles: int, dimx: int = 6, max_angular_velocity_mag: float = 0.3
@@ -32,22 +40,26 @@ def initialize(
     svi: np.ndarray,
     ovi: np.ndarray,
     lc_true: np.ndarray,
-    x0: np.ndarray,
+    x0: np.ndarray | None = None,
     dimx: int = 6,
+    n_particles: int = 10_000,
     max_angular_velocity_magnitude: float = 0.3,
     **taichi_kwargs,
-) -> None:
+) -> np.ndarray:
     init_ti(**taichi_kwargs)
+
+    os.environ["TI_NUM_TIMES"] = str(lc_true.size)
 
     if x0 is not None:
         os.environ["TI_DIM_X"] = str(x0.shape[1])
     else:
         os.environ["TI_DIM_X"] = str(dimx)
-
-    os.environ["TI_NUM_TIMES"] = str(lc_true.size)
+        x0 = generate_initial_states(n_particles, dimx, max_angular_velocity_magnitude)
 
     from .core import load_lc_true, load_observation_geometry, load_obj
 
     load_lc_true(lc_true)
     load_observation_geometry(svi, ovi)
     load_obj(obj_path)
+
+    return x0

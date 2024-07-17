@@ -201,6 +201,11 @@ def propagate_one(x0: ti.template()) -> ti.f32:
     loss = compute_loss(lc)
     return loss
 
+@ti.kernel
+def _compute_light_curves(x0s: ti.template(), lcs: ti.template()) -> int:
+    for i in x0s:
+        lcs[i] = compute_lc(x0s[i])
+    return 0
 
 @ti.func
 def gen_x0(w_max: ti.f32) -> ti.template():
