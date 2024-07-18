@@ -27,6 +27,29 @@ def rand_s3() -> ti.math.vec4:
 
 
 @ti.func
+def spiral_s3(n, i) -> ti.math.vec4:
+    """Samples the hypersphere with a fibonacci spiral
+
+    :param n: Number of quaternions being sampled overall
+    :type n: int
+    :param i: Index of the current saple
+    :type i: int
+    :return: Sampled unit quaternions
+    :rtype: ti.math.vec4
+    """
+    phi = ti.sqrt(2.0)
+    psi = 1.533751168755204288118041
+    s = i + 0.5
+    r = ti.sqrt(s / n)
+    R = ti.sqrt(1.0 - s / n)
+    alpha = 2.0 * ti.math.pi * s / phi
+    beta = 2.0 * ti.math.pi * s / psi
+    return ti.math.vec4(
+        [r * ti.sin(alpha), r * ti.cos(alpha), R * ti.sin(beta), R * ti.cos(beta)]
+    )
+
+
+@ti.func
 def quat_to_mrp(q: ti.math.vec4) -> ti.math.vec3:
     return q[:3] / (q[3] + 1)
 
@@ -201,16 +224,21 @@ def propagate_one(x0: ti.template()) -> ti.f32:
     loss = compute_loss(lc)
     return loss
 
+
 @ti.kernel
 def _compute_light_curves(x0s: ti.template(), lcs: ti.template()) -> int:
     for i in x0s:
         lcs[i] = compute_lc(x0s[i])
     return 0
 
+
 @ti.func
-def gen_x0(w_max: ti.f32) -> ti.template():
+def gen_x0(n: ti.i32, i: ti.i32, w_max: ti.f32) -> ti.template():
     x0 = ti.types.vector(n=NSTATES, dtype=ti.f32)(0.0)
-    x0[:3] = quat_to_mrp(rand_s3())
+    q0 = spiral_s3(n, i)
+    if q0.w < 0:
+        q0 *= -1
+    x0[:3] = quat_to_mrp(q0)
     x0[3:6] = rand_b2(w_max)
     if ti.static(x0.n > 6):  # iy
         x0[6] = ti.random() * 3

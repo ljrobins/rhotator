@@ -3,14 +3,18 @@ import taichi as ti
 import os
 from tibfgs import init_ti
 
+
 def compute_light_curves(x0s: np.ndarray) -> np.ndarray:
     from .core import _compute_light_curves, NTIMES
 
-    x0s_ti = ti.field(dtype=ti.types.vector(n=x0s.shape[1], dtype=ti.f32), shape=x0s.shape[0])
+    x0s_ti = ti.field(
+        dtype=ti.types.vector(n=x0s.shape[1], dtype=ti.f32), shape=x0s.shape[0]
+    )
     x0s_ti.from_numpy(x0s)
     lcs = ti.field(dtype=ti.types.vector(n=NTIMES, dtype=ti.f32), shape=x0s.shape[0])
     _compute_light_curves(x0s_ti, lcs)
     return lcs.to_numpy()
+
 
 def generate_initial_states(
     n_particles: int, dimx: int = 6, max_angular_velocity_mag: float = 0.3
@@ -27,7 +31,7 @@ def generate_initial_states(
     @ti.kernel
     def gen_x0s() -> int:
         for i in x0s:
-            x0s[i] = gen_x0(max_angular_velocity_mag)
+            x0s[i] = gen_x0(x0s.shape[0], i, max_angular_velocity_mag)
         return 0
 
     gen_x0s()
