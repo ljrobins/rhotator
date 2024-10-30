@@ -57,11 +57,22 @@ def quat_to_mrp(q: ti.math.vec4) -> ti.math.vec3:
 
 
 @ti.func
-def normalized_convex_light_curve(L: ti.math.vec3, O: ti.math.vec3) -> float:
+def normalized_convex_light_curve(
+    L: ti.math.vec3, O: ti.math.vec3, self_shadowing: bool = False
+) -> float:
     b = 0.0
+    saz, sel = cart_to_sph(L)
+    oaz, oel = cart_to_sph(O)
+    uas = unshadowed_areas(oaz, oel, saz, sel)
+
+    ti.loop_config(serialize=True)
     for i in range(fn.shape[0]):
-        fr = brdf_blinn_phong(L, O, fn[i], fd[i], fs[i], fp[i])
-        ti.atomic_add(b, fa[i] * fr * rdot(fn[i], O) * rdot(fn[i], L))
+        ndo = rdot(fn[i], O)
+        ndl = rdot(fn[i], L)
+
+        if ndo > 0 and ndl > 0:
+            fr = brdf_blinn_phong(L, O, fn[i], fd[i], fs[i], fp[i])
+            ti.atomic_add(b, uas[i] * fr * ndo * ndl)
     return b
 
 
@@ -113,7 +124,17 @@ def brdf_phong(
 
 
 @ti.func
-def compute_lc(x0: ti.template()) -> ti.template():
+def cart_to_sph(v: ti.math.vec3) -> ti.math.vec2:
+    x, y, z = v
+    az = ti.atan2(y, x)
+    el = ti.atan2(z, ti.sqrt(x**2 + y**2))
+    if el < 0:
+        el = 2 * ti.math.pi - el
+    return ti.math.vec2(az, el)
+
+
+@ti.func
+def compute_lc(x0: ti.template(), self_shadowing: bool = False) -> ti.template():
     current_state = x0
     itens = itensor
     if ti.static(x0.n > 6):
@@ -127,7 +148,7 @@ def compute_lc(x0: ti.template()) -> ti.template():
         dcm = mrp_to_dcm(current_state[:3])
         svb = dcm @ SVI[j]
         ovb = dcm @ OVI[j]
-        lc[j] = normalized_convex_light_curve(svb, ovb)
+        lc[j] = normalized_convex_light_curve(svb, ovb, self_shadowing=self_shadowing)
         current_state = rk4_step(current_state, h, itens)
     return lc
 
@@ -246,6 +267,13 @@ def compute_loss(lc: ti.template()) -> ti.f32:
 @ti.func
 def propagate_one(x0: ti.template()) -> ti.f32:
     lc = compute_lc(x0)
+    loss = compute_loss(lc)
+    return loss
+
+
+@ti.func
+def propagate_one_self_shadow(x0: ti.template()) -> ti.f32:
+    lc = compute_lc(x0, self_shadowing=True)
     loss = compute_loss(lc)
     return loss
 
@@ -410,7 +438,7 @@ def load_obj(obj_path: str) -> None:
     v1, v2, v3 = v[f[:, 0]], v[f[:, 1]], v[f[:, 2]]
     fnn = np.cross(v2 - v1, v3 - v1)
     fan = np.linalg.norm(fnn, axis=1) / 2
-    fnn = fnn / fan.reshape(-1,1) / 2  # Normalizing
+    fnn = fnn / fan.reshape(-1, 1) / 2  # Normalizing
 
     # fnn, fan = unique_areas_and_normals(fnn, fan.flatten()) # We can't do this without messing it up for non-convex objects
 
@@ -419,3 +447,11 @@ def load_obj(obj_path: str) -> None:
 
     fn = ti.Vector.field(n=3, dtype=ti.f32, shape=fnn.shape[0])
     fn.from_numpy(fnn)
+
+
+unshadowed_areas = None
+
+
+def load_unshadowed_areas(fcn) -> None:
+    global unshadowed_areas
+    unshadowed_areas = fcn

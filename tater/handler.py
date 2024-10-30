@@ -5,6 +5,7 @@ from tibfgs import init_ti
 import polars as pl
 import time
 import tibfgs
+import ticlip
 
 
 def direct_invert_attitude(
@@ -54,10 +55,13 @@ def direct_invert_attitude(
         dimx=dimx,
     )
 
-    from .core import propagate_one
+    from .core import propagate_one, propagate_one_self_shadow, load_unshadowed_areas
+    from ticlip.handler import unshadowed_areas_handle
+
+    load_unshadowed_areas(unshadowed_areas_handle())
 
     t1 = time.time()
-    res = tibfgs.minimize(propagate_one, x0)
+    res = tibfgs.minimize(propagate_one_self_shadow, x0)
     t2 = time.time() - t1
     if verbose:
         print(
@@ -116,7 +120,7 @@ def initialize(
     max_angular_velocity_magnitude: float = 0.3,
     **taichi_kwargs,
 ) -> np.ndarray:
-    init_ti(**taichi_kwargs)
+    # init_ti(**taichi_kwargs)
 
     os.environ["TI_NUM_TIMES"] = str(lc_true.size)
 
