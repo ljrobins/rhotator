@@ -2,6 +2,72 @@ import numpy as np
 import taichi as ti
 import os
 from tibfgs import init_ti
+import polars as pl
+import time
+import tibfgs
+
+
+def direct_invert_attitude(
+    t: np.ndarray,
+    svi: np.ndarray,
+    ovi: np.ndarray,
+    lc_true: np.ndarray,
+    n_particles: int,
+    max_angular_velocity_magnitude: float,
+    obj_file_path: str,
+    dimx: int = 6,
+    verbose: bool = False,
+    remove_nans: bool = False,
+) -> pl.DataFrame:
+    """Performs direct BFGS nonlinear optimization on ``n_particles`` number of initial conditions
+
+    :param t: Times [seconds]
+    :type t: np.ndarray [n,]
+    :param svi: Inertial unit vector from the space object to the Sun
+    :type svi: np.ndarray [3,]
+    :param ovi: Inertial unit vector from the space object to the observer
+    :type ovi: np.ndarray [3,]
+    :param lc_true: True light curve
+    :type lc_true: np.ndarray [n,]
+    :param n_particles: Number of particles (initial conditions) to optimize
+    :type n_particles: int
+    :param max_angular_velocity_magnitude: Maximum magnitude of the angular velocity vector [rad/s]
+    :type max_angular_velocity_magnitude: float
+    :param obj_file_path: Path to the .obj file to use
+    :type obj_file_path: str
+    :param dimx: Dimension of the state (6 is just orientation and angular velocity), defaults to 6
+    :type dimx: int, optional
+    :param verbose: Whether to print diagnostic information about the optimization process, defaults to False
+    :type verbose: bool, optional
+    :param remove_nans: Whether to remove solutions that converged to NaN values for the objective function, defaults to False
+    :type remove_nans: bool, optional
+    :return: Dataframe of results
+    :rtype: pl.DataFrame
+    """
+    x0 = initialize(
+        obj_file_path,
+        svi,
+        ovi,
+        lc_true,
+        max_angular_velocity_magnitude=max_angular_velocity_magnitude,
+        n_particles=n_particles,
+        dimx=dimx,
+    )
+
+    from .core import propagate_one
+
+    t1 = time.time()
+    res = tibfgs.minimize(propagate_one, x0)
+    t2 = time.time() - t1
+    if verbose:
+        print(
+            f"Optimizing {n_particles} over {len(lc_true)} data points took {t2-t1:.2f} seconds"
+        )
+    lcs = compute_light_curves(res["xk"].to_numpy())
+    res = res.with_columns(lcs=lcs)
+    if remove_nans:
+        res = res.sort("fun").filter(pl.col("fun").is_not_nan())
+    return res
 
 
 def compute_light_curves(x0s: np.ndarray) -> np.ndarray:

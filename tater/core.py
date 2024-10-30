@@ -1,10 +1,12 @@
 import taichi as ti
 import os
 import numpy as np
-import trimesh
 
 NSTATES = int(os.environ["TI_DIM_X"])
 NTIMES = int(os.environ["TI_NUM_TIMES"])
+
+SVI = ti.field(dtype=ti.math.vec3, shape=NTIMES)
+OVI = ti.field(dtype=ti.math.vec3, shape=NTIMES)
 
 h: ti.f32 = 1.0 / NTIMES
 itensor = ti.Vector([1.0, 2.0, 3.0])
@@ -58,7 +60,7 @@ def quat_to_mrp(q: ti.math.vec4) -> ti.math.vec3:
 def normalized_convex_light_curve(L: ti.math.vec3, O: ti.math.vec3) -> float:
     b = 0.0
     for i in range(fn.shape[0]):
-        fr = brdf_phong(L, O, fn[i], fd[i], fs[i], fp[i])
+        fr = brdf_blinn_phong(L, O, fn[i], fd[i], fs[i], fp[i])
         ti.atomic_add(b, fa[i] * fr * rdot(fn[i], O) * rdot(fn[i], L))
     return b
 
@@ -66,6 +68,27 @@ def normalized_convex_light_curve(L: ti.math.vec3, O: ti.math.vec3) -> float:
 @ti.func
 def rdot(v1, v2) -> float:
     return ti.max(ti.math.dot(v1, v2), 0.0)
+
+
+@ti.func
+def brdf_blinn_phong(
+    L: ti.math.vec3,
+    O: ti.math.vec3,
+    N: ti.math.vec3,
+    cd: float,
+    cs: float,
+    n: float,
+) -> float:
+    H = (L + O).normalized()
+    D = (n + 2) / (2 * np.pi) * rdot(N, H) ** n
+    denom = 4 * rdot(N, L) * rdot(N, O)
+    fr: ti.f32 = ti.math.nan
+    if denom <= 1e-5:
+        fr = 0.0
+    else:
+        fd = cd / ti.math.pi
+        fr = fd + cs * D / denom
+    return fr
 
 
 @ti.func
@@ -102,7 +125,9 @@ def compute_lc(x0: ti.template()) -> ti.template():
     ti.loop_config(serialize=True)
     for j in range(lc.n):
         dcm = mrp_to_dcm(current_state[:3])
-        lc[j] = normalized_convex_light_curve(dcm @ L, dcm @ O)
+        svb = dcm @ SVI[j]
+        ovb = dcm @ OVI[j]
+        lc[j] = normalized_convex_light_curve(svb, ovb)
         current_state = rk4_step(current_state, h, itens)
     return lc
 
@@ -255,14 +280,27 @@ def load_lc_true(lc_arr: np.ndarray):
     lc_true = ti.types.vector(n=NTIMES, dtype=ti.f32)(lc_arr)
 
 
-L = None
-O = None
-
-
 def load_observation_geometry(svi: np.ndarray, ovi: np.ndarray) -> None:
-    global L, O
-    L = ti.math.vec3(svi).normalized()
-    O = ti.math.vec3(ovi).normalized()
+    global SVI, OVI
+    if svi.size == 3 and ovi.size == 3:
+        svi = np.tile(svi, (NTIMES, 1))
+        ovi = np.tile(ovi, (NTIMES, 1))
+    elif svi.shape == (NTIMES, 3) and ovi.shape == (NTIMES, 3):
+        pass
+    else:
+        raise ValueError(
+            f"The shapes of either svi or ovi are not (3,) or (NTIMES,3), got {svi.shape=}, {ovi.shape=}"
+        )
+
+    assert np.allclose(
+        np.linalg.norm(svi, axis=1), 1.0
+    ), "Make sure svi rows are normalized!"
+    assert np.allclose(
+        np.linalg.norm(ovi, axis=1), 1.0
+    ), "Make sure ovi rows are normalized!"
+
+    SVI.from_numpy(svi.astype(np.float32))
+    OVI.from_numpy(ovi.astype(np.float32))
 
 
 def unique_areas_and_normals(fn: np.ndarray, fa: np.ndarray):
@@ -279,27 +317,105 @@ def unique_areas_and_normals(fn: np.ndarray, fa: np.ndarray):
     return unique_normals, unique_areas
 
 
+def load_mtllib(mtllib_path: str) -> dict:
+    """Loads a .mtl file
+
+    :param mtllib_path: Path to the .mtl file
+    :type mtllib_path: str
+    :return: Dictionary of materials arranged by material name
+    :rtype: dict
+    """
+    print(mtllib_path)
+    with open(mtllib_path, "r") as f:
+        materials = {}
+        current_mat_name = None
+        for line in f.readlines():
+            if "newmtl" in line:
+                current_mat_name = line.split()[1]
+                materials[current_mat_name] = {}
+            if current_mat_name is not None:
+                if "Kd" in line:
+                    vals = list(map(float, line.split()[1:]))
+                    materials[current_mat_name]["cd"] = vals[0]
+                    materials[current_mat_name]["cs"] = vals[1]
+                elif "Ni" in line:
+                    materials[current_mat_name]["n"] = float(line.split()[1])
+    return materials
+
+
 def load_obj(obj_path: str) -> None:
     global fa, fn, fd, fs, fp
-    obj = trimesh.load(obj_path)
-    v1 = obj.vertices[obj.faces[:, 0]].astype(np.float32)
-    v2 = obj.vertices[obj.faces[:, 1]].astype(np.float32)
-    v3 = obj.vertices[obj.faces[:, 2]].astype(np.float32)
-    fnn = np.cross(v2 - v1, v3 - v1)
-    fan = np.linalg.norm(fnn, axis=1, keepdims=True).astype(np.float32) / 2
-    fnn = fnn / fan / 2
 
-    fnn, fan = unique_areas_and_normals(fnn, fan.flatten())
+    obj_dir = os.path.split(obj_path)[0]
+    with open(obj_path, "r") as f:
+        lines = f.readlines()
+        mtllib_lines = [line for line in lines if "mtllib" in line]
+        if not len(mtllib_lines):
+            raise ValueError("No mtllib found!")
+        elif len(mtllib_lines) > 1:
+            raise ValueError("Multiple mtllibs found, not supported!")
+        mtllib_name = mtllib_lines[0].split()[1]
+        materials = load_mtllib(os.path.join(obj_dir, mtllib_name))
+
+        v = []
+        f = []
+        f_cd_cs_n = []
+        current_mat = None
+        for i, line in enumerate(lines):
+            if line.startswith("v "):
+                v.append(list(map(float, line[2:].split())))
+            if (
+                "usemtl" in line
+            ):  # then the next faces should all use the specified material
+                if materials is None:
+                    raise ValueError(
+                        "no mtllib declaration found in .obj file, but at least one usemtl line exists"
+                    )
+                current_mat_name = line.split()[1]
+                if not current_mat_name in materials:
+                    raise ValueError(
+                        f"Material {current_mat_name} not found in the material library!"
+                    )
+                current_mat = materials[current_mat_name]
+            elif line.startswith("f "):
+                if current_mat is None:
+                    raise ValueError(
+                        f"Encountered a face definition before the current material was set! ({obj_path}, line {i})"
+                    )
+                lf = (
+                    np.array(
+                        [
+                            list(map(int, [y for y in x.split("/") if len(y)]))
+                            for x in line[2:].strip().split(" ")
+                        ]
+                    )
+                    - 1
+                )
+                f.append(lf[:, 0].tolist())
+                f_cd_cs_n.append(
+                    [current_mat["cd"], current_mat["cs"], current_mat["n"]]
+                )
+    f_cd_cs_n = np.array(f_cd_cs_n, dtype=np.float32)
+
+    v = np.array(v, dtype=np.float32)
+    f = np.array(f, dtype=np.uint16)
+
+    fd = ti.field(dtype=ti.f32, shape=f.shape[0])
+    fd.from_numpy(f_cd_cs_n[:, 0])
+    fs = ti.field(dtype=ti.f32, shape=f.shape[0])
+    fd.from_numpy(f_cd_cs_n[:, 1])
+    fp = ti.field(dtype=ti.f32, shape=f.shape[0])
+    fd.from_numpy(f_cd_cs_n[:, 2])
+
+    v1, v2, v3 = v[f[:, 0]], v[f[:, 1]], v[f[:, 2]]
+    fnn = np.cross(v2 - v1, v3 - v1)
+    fan = np.linalg.norm(fnn, axis=1) / 2
+    fnn = fnn / fan.reshape(-1,1) / 2  # Normalizing
+
+    # fnn, fan = unique_areas_and_normals(fnn, fan.flatten()) # We can't do this without messing it up for non-convex objects
 
     fa = ti.field(dtype=ti.f32, shape=fan.shape)
     fa.from_numpy(fan)
 
     fn = ti.Vector.field(n=3, dtype=ti.f32, shape=fnn.shape[0])
     fn.from_numpy(fnn)
-
-    fd = ti.field(dtype=ti.f32, shape=fnn.shape[0])
-    fd.fill(0.5)
-    fs = ti.field(dtype=ti.f32, shape=fnn.shape[0])
-    fs.fill(0.5)
-    fp = ti.field(dtype=ti.f32, shape=fnn.shape[0])
-    fp.fill(3)
