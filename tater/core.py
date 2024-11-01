@@ -63,6 +63,7 @@ def normalized_convex_light_curve(
     b = 0.0
     saz, sel = cart_to_sph(L)
     oaz, oel = cart_to_sph(O)
+    # if self_shadowing:
     uas = unshadowed_areas(oaz, oel, saz, sel)
 
     ti.loop_config(serialize=True)
@@ -128,8 +129,8 @@ def cart_to_sph(v: ti.math.vec3) -> ti.math.vec2:
     x, y, z = v
     az = ti.atan2(y, x)
     el = ti.atan2(z, ti.sqrt(x**2 + y**2))
-    if el < 0:
-        el = 2 * ti.math.pi - el
+    if az < 0:
+        az = az + 2 * ti.math.pi
     return ti.math.vec2(az, el)
 
 
@@ -366,6 +367,10 @@ def load_mtllib(mtllib_path: str) -> dict:
                     vals = list(map(float, line.split()[1:]))
                     materials[current_mat_name]["cd"] = vals[0]
                     materials[current_mat_name]["cs"] = vals[1]
+                    if (vals[0] + vals[1]) > 1.0:
+                        raise ValueError(
+                            "Red plus Green channel of each material must add to less than 1 for energy conservation, aborting."
+                        )
                 elif "Ni" in line:
                     materials[current_mat_name]["n"] = float(line.split()[1])
     return materials
@@ -400,7 +405,7 @@ def load_obj(obj_path: str) -> None:
                         "no mtllib declaration found in .obj file, but at least one usemtl line exists"
                     )
                 current_mat_name = line.split()[1]
-                if not current_mat_name in materials:
+                if current_mat_name not in materials:
                     raise ValueError(
                         f"Material {current_mat_name} not found in the material library!"
                     )
@@ -431,9 +436,9 @@ def load_obj(obj_path: str) -> None:
     fd = ti.field(dtype=ti.f32, shape=f.shape[0])
     fd.from_numpy(f_cd_cs_n[:, 0])
     fs = ti.field(dtype=ti.f32, shape=f.shape[0])
-    fd.from_numpy(f_cd_cs_n[:, 1])
+    fs.from_numpy(f_cd_cs_n[:, 1])
     fp = ti.field(dtype=ti.f32, shape=f.shape[0])
-    fd.from_numpy(f_cd_cs_n[:, 2])
+    fp.from_numpy(f_cd_cs_n[:, 2])
 
     v1, v2, v3 = v[f[:, 0]], v[f[:, 1]], v[f[:, 2]]
     fnn = np.cross(v2 - v1, v3 - v1)

@@ -1,15 +1,12 @@
 import numpy as np
 import taichi as ti
 import os
-from tibfgs import init_ti
 import polars as pl
 import time
 import tibfgs
-import ticlip
 
 
 def direct_invert_attitude(
-    t: np.ndarray,
     svi: np.ndarray,
     ovi: np.ndarray,
     lc_true: np.ndarray,
@@ -22,8 +19,6 @@ def direct_invert_attitude(
 ) -> pl.DataFrame:
     """Performs direct BFGS nonlinear optimization on ``n_particles`` number of initial conditions
 
-    :param t: Times [seconds]
-    :type t: np.ndarray [n,]
     :param svi: Inertial unit vector from the space object to the Sun
     :type svi: np.ndarray [3,]
     :param ovi: Inertial unit vector from the space object to the observer
@@ -55,13 +50,13 @@ def direct_invert_attitude(
         dimx=dimx,
     )
 
-    from .core import propagate_one, propagate_one_self_shadow, load_unshadowed_areas
+    from .core import propagate_one, load_unshadowed_areas
     from ticlip.handler import unshadowed_areas_handle
 
     load_unshadowed_areas(unshadowed_areas_handle())
 
     t1 = time.time()
-    res = tibfgs.minimize(propagate_one_self_shadow, x0)
+    res = tibfgs.minimize(propagate_one, x0)
     t2 = time.time() - t1
     if verbose:
         print(
