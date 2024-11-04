@@ -4,12 +4,24 @@ import numpy as np
 
 NSTATES = int(os.environ["TI_DIM_X"])
 NTIMES = int(os.environ["TI_NUM_TIMES"])
+LOSS_TYPE = int(os.environ["TATER_LOSS_TYPE"])
+SELF_SHADOWING = bool(os.environ["TATER_SELF_SHADOW"])
 
 SVI = ti.field(dtype=ti.math.vec3, shape=NTIMES)
 OVI = ti.field(dtype=ti.math.vec3, shape=NTIMES)
 
 h: ti.f32 = 1.0 / NTIMES
 itensor = ti.Vector([1.0, 2.0, 3.0])
+
+
+@ti.func
+def clip(x: ti.f32, min_v: ti.f32, max_v: ti.f32) -> ti.f32:
+    v = x
+    if x < min_v:
+        v = min_v
+    if x > max_v:
+        v = max_v
+    return v
 
 
 @ti.func
@@ -57,14 +69,18 @@ def quat_to_mrp(q: ti.math.vec4) -> ti.math.vec3:
 
 
 @ti.func
-def normalized_convex_light_curve(
-    L: ti.math.vec3, O: ti.math.vec3, self_shadowing: bool = False
-) -> float:
+def normalized_convex_light_curve(L: ti.math.vec3, O: ti.math.vec3) -> float:
     b = 0.0
-    saz, sel = cart_to_sph(L)
-    oaz, oel = cart_to_sph(O)
-    # if self_shadowing:
-    uas = unshadowed_areas(oaz, oel, saz, sel)
+
+    uas = ti.types.vector(n=fn.shape[0], dtype=ti.f32)(0.0)
+    ti.loop_config(serialize=True)
+    for i in range(fn.shape[0]):
+        uas[i] = fa[i]
+
+    if SELF_SHADOWING:
+        saz, sel = cart_to_sph(L)
+        oaz, oel = cart_to_sph(O)
+        uas = unshadowed_areas(oaz, oel, saz, sel)
 
     ti.loop_config(serialize=True)
     for i in range(fn.shape[0]):
@@ -135,7 +151,7 @@ def cart_to_sph(v: ti.math.vec3) -> ti.math.vec2:
 
 
 @ti.func
-def compute_lc(x0: ti.template(), self_shadowing: bool = False) -> ti.template():
+def compute_lc(x0: ti.template()) -> ti.template():
     current_state = x0
     itens = itensor
     if ti.static(x0.n > 6):
@@ -150,7 +166,7 @@ def compute_lc(x0: ti.template(), self_shadowing: bool = False) -> ti.template()
         dcm = mrp_to_dcm(current_state[:3])
         svb = dcm @ SVI[j]
         ovb = dcm @ OVI[j]
-        lc[j] = normalized_convex_light_curve(svb, ovb, self_shadowing=self_shadowing)
+        lc[j] = normalized_convex_light_curve(svb, ovb)
         current_state = rk4_step(current_state, h, itens)
     return lc
 
@@ -257,30 +273,27 @@ def state_derivative_quat(x, itensor):
 
 @ti.func
 def compute_loss(lc: ti.template()) -> ti.f32:
-    # lcn = lc.normalized()
-    # dp = ti.math.dot(lcn, lc_true.normalized())
-    # dpc = tibfgs.clip(dp, -1.0, 1.0)
-    # loss = ti.acos(dp)
-    # return loss
-    # loss = (lc - lc_true).norm_sqr() # L2 error
-    sigma = 0.3
-    mu = lc_true
-    loss = (
-        ti.log(sigma) + 1 / 2 * ((lc - mu) / sigma) ** 2
-    ).sum()  # Negative Log Likelihood
+    loss = 0.0
+
+    if LOSS_TYPE == 2:
+        # Cosine loss
+        dp = ti.math.dot(lc.normalized(), lc_obs.normalized())
+        loss = ti.acos(clip(dp, -1.0, 1.0))
+    elif LOSS_TYPE == 1:
+        # Negative log-likelihood
+        loss = (
+            ti.log(sigma_obs) + 1 / 2 * ((lc - lc_obs) / sigma_obs) ** 2
+        ).sum()  # Negative Log Likelihood
+    elif LOSS_TYPE == 0:
+        # L2 norm error
+        loss = (lc - lc_obs).norm_sqr()  # L2 error
+
     return loss
 
 
 @ti.func
 def propagate_one(x0: ti.template()) -> ti.f32:
     lc = compute_lc(x0)
-    loss = compute_loss(lc)
-    return loss
-
-
-@ti.func
-def propagate_one_self_shadow(x0: ti.template()) -> ti.f32:
-    lc = compute_lc(x0, self_shadowing=True)
     loss = compute_loss(lc)
     return loss
 
@@ -307,12 +320,17 @@ def gen_x0(n: ti.i32, i: ti.i32, w_max: ti.f32) -> ti.template():
     return x0
 
 
-lc_true = None
+lc_obs = None
+sigma_obs = None
 
 
-def load_lc_true(lc_arr: np.ndarray):
-    global lc_true
-    lc_true = ti.types.vector(n=NTIMES, dtype=ti.f32)(lc_arr)
+def load_lc_obs(lc_arr: np.ndarray, sigma: np.ndarray):
+    global lc_obs, sigma_obs
+    lc_obs = ti.types.vector(n=NTIMES, dtype=ti.f32)(lc_arr)
+    if sigma is not None:
+        sigma_obs = ti.types.vector(n=NTIMES, dtype=ti.f32)(sigma)
+    else:
+        sigma_obs = 0 * lc_obs
 
 
 def load_observation_geometry(svi: np.ndarray, ovi: np.ndarray) -> None:
