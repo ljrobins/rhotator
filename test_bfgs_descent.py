@@ -16,8 +16,10 @@ ti.init(
     advanced_optimization=False,
 )
 
+np.random.seed(2)
+
 t = np.linspace(0, 1, 30)
-lc_true = np.sin(10 * t) / 2 + 1
+lc_true = np.sin(10 * t) / 2 + 1 + np.random.normal(loc=np.zeros_like(t), scale=0.3)
 
 svi = np.tile(np.array([1.0, 0.0, 0.0]), (len(t), 1))
 ovi = np.tile(np.array([np.sqrt(2) / 2, np.sqrt(2) / 2, 0.0]), (len(t), 1))
@@ -27,9 +29,6 @@ obj_path = "/Users/liamrobinson/Documents/maintained-research/mirage-models/Non-
 
 ticlip.load_finfo(obj_path)
 imat = ticlip.gen_cache(500, 500)
-
-print(imat.to_numpy().sum())
-# endd
 
 x0s = tater.initialize(
     obj_path,
@@ -41,7 +40,6 @@ x0s = tater.initialize(
     dimx=6,
 )
 
-
 from tater.core import (
     load_unshadowed_areas,
     compute_lc,
@@ -50,7 +48,7 @@ from ticlip.handler import unshadowed_areas_handle
 
 load_unshadowed_areas(unshadowed_areas_handle())
 
-x0 = ti.Vector([0.0, 0.0, 0.0, 1.0, 1.0, 1.0], dt=ti.float32)
+x0 = ti.Vector([0.0, 0.0, 0.0, -3.0, 3.0, 1.0], dt=ti.float32)
 
 
 @ti.kernel
@@ -60,31 +58,25 @@ def test():
 
 test()
 
-endd
+# endd
 
 
-# res = tater.direct_invert_attitude(
-#     svi,
-#     ovi,
-#     lc_true,
-#     n_particles=int(1e4),
-#     max_angular_velocity_magnitude=0.3,
-#     obj_file_path=obj_path,
-#     remove_nans=True,
-# )
+res = tater.direct_invert_attitude(
+    svi,
+    ovi,
+    lc_true,
+    n_particles=int(1e4),
+    max_angular_velocity_magnitude=4.0,
+    obj_file_path=obj_path,
+    remove_nans=True,
+)
 
 print(res)
 
 fvals = res["fun"].to_numpy()
 
-res.write_parquet("saved.parquet")
+res.write_parquet("saved_nll.parquet")
 
 ti.profiler.print_scoped_profiler_info()
-
-print(res["xk"].to_numpy()[:10, :])
-
-plt.plot(res["lcs"].to_numpy()[:10, :].T)
-plt.plot(lc_true, linewidth=3)
-plt.show()
 
 os.system("cp saved.parquet ../../maintained-research/mirage")

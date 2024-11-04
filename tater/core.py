@@ -146,6 +146,7 @@ def compute_lc(x0: ti.template(), self_shadowing: bool = False) -> ti.template()
     lc = ti.types.vector(n=NTIMES, dtype=ti.f32)(0.0)
     ti.loop_config(serialize=True)
     for j in range(lc.n):
+        # print("TIMESTEP", j)
         dcm = mrp_to_dcm(current_state[:3])
         svb = dcm @ SVI[j]
         ovb = dcm @ OVI[j]
@@ -261,8 +262,13 @@ def compute_loss(lc: ti.template()) -> ti.f32:
     # dpc = tibfgs.clip(dp, -1.0, 1.0)
     # loss = ti.acos(dp)
     # return loss
-    # return (ti.math.log(lc + 1.0) - ti.math.log(lc_true + 1)).norm_sqr()
-    return (lc - lc_true).norm_sqr()
+    # loss = (lc - lc_true).norm_sqr() # L2 error
+    sigma = 0.3
+    mu = lc_true
+    loss = (
+        ti.log(sigma) + 1 / 2 * ((lc - mu) / sigma) ** 2
+    ).sum()  # Negative Log Likelihood
+    return loss
 
 
 @ti.func
@@ -332,20 +338,6 @@ def load_observation_geometry(svi: np.ndarray, ovi: np.ndarray) -> None:
     OVI.from_numpy(ovi.astype(np.float32))
 
 
-def unique_areas_and_normals(fn: np.ndarray, fa: np.ndarray):
-    """Finds groups of unique normals and areas to save rows elsewhere"""
-    (
-        unique_normals,
-        all_to_unique,
-        unique_to_all,
-    ) = np.unique(
-        np.round(fn, decimals=6), axis=0, return_index=True, return_inverse=True
-    )
-    unique_areas = np.zeros((unique_normals.shape[0]), dtype=np.float32)
-    np.add.at(unique_areas, unique_to_all, fa)
-    return unique_normals, unique_areas
-
-
 def load_mtllib(mtllib_path: str) -> dict:
     """Loads a .mtl file
 
@@ -354,7 +346,7 @@ def load_mtllib(mtllib_path: str) -> dict:
     :return: Dictionary of materials arranged by material name
     :rtype: dict
     """
-    print(mtllib_path)
+    print(f"Reading", mtllib_path)
     with open(mtllib_path, "r") as f:
         materials = {}
         current_mat_name = None
@@ -444,8 +436,6 @@ def load_obj(obj_path: str) -> None:
     fnn = np.cross(v2 - v1, v3 - v1)
     fan = np.linalg.norm(fnn, axis=1) / 2
     fnn = fnn / fan.reshape(-1, 1) / 2  # Normalizing
-
-    # fnn, fan = unique_areas_and_normals(fnn, fan.flatten()) # We can't do this without messing it up for non-convex objects
 
     fa = ti.field(dtype=ti.f32, shape=fan.shape)
     fa.from_numpy(fan)
