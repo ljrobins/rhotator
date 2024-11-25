@@ -6,11 +6,11 @@ NSTATES = int(os.environ["TI_DIM_X"])
 NTIMES = int(os.environ["TI_NUM_TIMES"])
 LOSS_TYPE = int(os.environ["TATER_LOSS_TYPE"])
 SELF_SHADOWING = bool(os.environ["TATER_SELF_SHADOW"])
+h: ti.f32 = float(os.environ["TATER_DT"])
 
 SVI = ti.field(dtype=ti.math.vec3, shape=NTIMES)
 OVI = ti.field(dtype=ti.math.vec3, shape=NTIMES)
 
-h: ti.f32 = 1.0 / NTIMES
 itensor = ti.Vector([1.0, 2.0, 3.0])
 
 
@@ -159,6 +159,9 @@ def compute_lc(x0: ti.template()) -> ti.template():
     if ti.static(x0.n > 7):
         itens.z = ti.abs(x0[7])
 
+    # print('INERTIA TENSOR: ', itens)
+    # print('x0: ', x0)
+
     lc = ti.types.vector(n=NTIMES, dtype=ti.f32)(0.0)
     ti.loop_config(serialize=True)
     for j in range(lc.n):
@@ -166,8 +169,10 @@ def compute_lc(x0: ti.template()) -> ti.template():
         dcm = mrp_to_dcm(current_state[:3])
         svb = dcm @ SVI[j]
         ovb = dcm @ OVI[j]
+        # print(j, 'h:', h, 'SVB:', svb)
         lc[j] = normalized_convex_light_curve(svb, ovb)
-        current_state = rk4_step(current_state, h, itens)
+        if j < lc.n - 1:  # if this isnt the last step
+            current_state = rk4_step(current_state, h, itens)
     return lc
 
 
@@ -377,17 +382,19 @@ def load_mtllib(mtllib_path: str) -> dict:
                     vals = list(map(float, line.split()[1:]))
                     materials[current_mat_name]["cd"] = vals[0]
                     materials[current_mat_name]["cs"] = vals[1]
+                    materials[current_mat_name]["n"] = vals[2] * 1000.0
                     if (vals[0] + vals[1]) > 1.0:
                         raise ValueError(
                             "Red plus Green channel of each material must add to less than 1 for energy conservation, aborting."
                         )
-                elif "Ni" in line:
-                    materials[current_mat_name]["n"] = float(line.split()[1])
     return materials
 
 
-def load_obj(obj_path: str) -> None:
-    global fa, fn, fd, fs, fp
+def load_obj(obj_path: str, itensor_ratios: np.ndarray) -> None:
+    global fa, fn, fd, fs, fp, itensor
+
+    if itensor_ratios is not None:
+        itensor[1:] = itensor_ratios
 
     obj_dir = os.path.split(obj_path)[0]
     with open(obj_path, "r") as f:
@@ -460,6 +467,8 @@ def load_obj(obj_path: str) -> None:
 
     fn = ti.Vector.field(n=3, dtype=ti.f32, shape=fnn.shape[0])
     fn.from_numpy(fnn)
+
+    print(fa, fp, fs, fd)
 
 
 unshadowed_areas = None

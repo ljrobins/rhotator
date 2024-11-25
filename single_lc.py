@@ -46,10 +46,9 @@ x0 = ti.Vector([0.0, 0.0, 0.0, -3.0, 3.0, 1.0], dt=ti.float32)
 
 
 @ti.kernel
-def test():
+def test() -> tuple[ti.types.vector(n=t.size, dtype=ti.f32), float]:
     lc = compute_lc(x0)
-    print(lc)
-    print(compute_loss(lc))
+    return lc, compute_loss(lc)
 
 
-test()
+lc, loss = test()
