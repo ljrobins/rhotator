@@ -25,7 +25,6 @@ def direct_invert_attitude(
     loss_function: str = "l2",
     sigma_obs: np.ndarray = None,
     cache_size: int = 500,
-    itensor_ratios: np.ndarray = None,
 ) -> pl.DataFrame:
     """Performs direct BFGS nonlinear optimization on initial conditions ``x0``
 
@@ -56,13 +55,12 @@ def direct_invert_attitude(
         loss_function=loss_function,
         sigma_obs=sigma_obs,
         cache_size=cache_size,
-        itensor_ratios=itensor_ratios,
     )
 
     from .core import propagate_one
 
     t1 = time.time()
-    res = tibfgs.minimize(propagate_one, x0)
+    res = tibfgs.minimize(propagate_one, x0, eps=1e-3)
     t2 = time.time() - t1
     if verbose:
         print(
@@ -123,7 +121,6 @@ def initialize(
     loss_function: str = "l2",
     sigma_obs: np.ndarray = None,
     cache_size: int = 500,
-    itensor_ratios: np.ndarray = None,
 ):
     from ticlip.handler import load_finfo
 
@@ -155,7 +152,7 @@ def initialize(
             )
     load_lc_obs(lc_true, sigma_obs)
     load_observation_geometry(svi, ovi)
-    load_obj(obj_path, itensor_ratios)
+    load_obj(obj_path)
 
     from .core import load_unshadowed_areas
     from ticlip.handler import unshadowed_areas_handle

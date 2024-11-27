@@ -286,9 +286,11 @@ def compute_loss(lc: ti.template()) -> ti.f32:
         loss = ti.acos(clip(dp, -1.0, 1.0))
     elif LOSS_TYPE == 1:
         # Negative log-likelihood
+        lc = lc * lc_obs.norm() / lc.norm() # Force same magnitude
         loss = (
             ti.log(sigma_obs) + 1 / 2 * ((lc - lc_obs) / sigma_obs) ** 2
-        ).sum()  # Negative Log Likelihood
+        ).sum()  # Negative Log-Likelihood
+
     elif LOSS_TYPE == 0:
         # L2 norm error
         loss = (lc - lc_obs).norm_sqr()  # L2 error
@@ -390,11 +392,8 @@ def load_mtllib(mtllib_path: str) -> dict:
     return materials
 
 
-def load_obj(obj_path: str, itensor_ratios: np.ndarray) -> None:
+def load_obj(obj_path: str) -> None:
     global fa, fn, fd, fs, fp, itensor
-
-    if itensor_ratios is not None:
-        itensor[1:] = itensor_ratios
 
     obj_dir = os.path.split(obj_path)[0]
     with open(obj_path, "r") as f:
@@ -468,7 +467,7 @@ def load_obj(obj_path: str, itensor_ratios: np.ndarray) -> None:
     fn = ti.Vector.field(n=3, dtype=ti.f32, shape=fnn.shape[0])
     fn.from_numpy(fnn)
 
-    print(fa, fp, fs, fd)
+    # print(fa, fp, fs, fd)
 
 
 unshadowed_areas = None
