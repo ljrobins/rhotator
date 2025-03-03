@@ -12,7 +12,8 @@ SVI = ti.field(dtype=ti.math.vec3, shape=NTIMES)
 OVI = ti.field(dtype=ti.math.vec3, shape=NTIMES)
 
 itensor = ti.Vector([1.0, 2.0, 3.0])
-
+naz = None
+nel = None
 
 @ti.func
 def clip(x: ti.f32, min_v: ti.f32, max_v: ti.f32) -> ti.f32:
@@ -80,7 +81,7 @@ def normalized_convex_light_curve(L: ti.math.vec3, O: ti.math.vec3) -> float:
     if SELF_SHADOWING:
         saz, sel = cart_to_sph(L)
         oaz, oel = cart_to_sph(O)
-        uas = unshadowed_areas(oaz, oel, saz, sel)
+        uas = unshadowed_areas(oaz, oel, saz, sel, naz, nel)
 
     ti.loop_config(serialize=True)
     for i in range(fn.shape[0]):
@@ -286,13 +287,16 @@ def compute_loss(lc: ti.template()) -> ti.f32:
         loss = ti.acos(clip(dp, -1.0, 1.0))
     elif LOSS_TYPE == 1:
         # Negative log-likelihood
-        lc = lc * lc_obs.norm() / lc.norm() # Force same magnitude
-        loss = (
-            ti.log(sigma_obs) + 1 / 2 * ((lc - lc_obs) / sigma_obs) ** 2
-        ).sum()  # Negative Log-Likelihood
+        lc = lc / lc.norm() * lc_obs_norm # Force est to have same magnitude as
+        ti.loop_config(serialize=True)
+        for i in range(lc.n):
+            if ~ti.math.isnan(sigma_obs[i]) and ~ti.math.isnan(lc_obs[i]):
+                loss = loss + ti.log(sigma_obs[i]) + 1 / 2 * ((lc[i] - lc_obs[i]) / sigma_obs[i]) ** 2
+        loss = loss / lc.n
 
     elif LOSS_TYPE == 0:
         # L2 norm error
+        lc = lc / lc.norm() * lc_obs_norm # Force est to have same magnitude as
         loss = (lc - lc_obs).norm_sqr()  # L2 error
 
     return loss
@@ -311,37 +315,25 @@ def _compute_light_curves(x0s: ti.template(), lcs: ti.template()) -> int:
         lcs[i] = compute_lc(x0s[i])
     return 0
 
-
-@ti.func
-def gen_x0(n: ti.i32, i: ti.i32, w_max: ti.f32) -> ti.template():
-    x0 = ti.types.vector(n=NSTATES, dtype=ti.f32)(0.0)
-    q0 = spiral_s3(n, i)
-    if q0.w < 0:
-        q0 *= -1
-    x0[:3] = quat_to_mrp(q0)
-    x0[3:6] = rand_b2(w_max)
-    if ti.static(x0.n > 6):  # iy
-        x0[6] = ti.random() * 3
-    if ti.static(x0.n > 7):  # iz
-        x0[7] = ti.random() * 3
-    return x0
-
-
 lc_obs = None
 sigma_obs = None
+lc_obs_norm = None
 
 
 def load_lc_obs(lc_arr: np.ndarray, sigma: np.ndarray):
-    global lc_obs, sigma_obs
+    global lc_obs, lc_obs_norm, sigma_obs
     lc_obs = ti.types.vector(n=NTIMES, dtype=ti.f32)(lc_arr)
+    lc_obs_norm = np.linalg.norm(lc_obs[~np.isnan(lc_obs)])
     if sigma is not None:
         sigma_obs = ti.types.vector(n=NTIMES, dtype=ti.f32)(sigma)
     else:
         sigma_obs = 0 * lc_obs
 
 
-def load_observation_geometry(svi: np.ndarray, ovi: np.ndarray) -> None:
-    global SVI, OVI
+def load_observation_geometry(svi: np.ndarray, ovi: np.ndarray, cache_size: int) -> None:
+    global SVI, OVI, naz, nel
+    naz = cache_size
+    nel = cache_size
     if svi.size == 3 and ovi.size == 3:
         svi = np.tile(svi, (NTIMES, 1))
         ovi = np.tile(ovi, (NTIMES, 1))
@@ -447,19 +439,26 @@ def load_obj(obj_path: str) -> None:
     f_cd_cs_n = np.array(f_cd_cs_n, dtype=np.float32)
 
     v = np.array(v, dtype=np.float32)
-    f = np.array(f, dtype=np.uint16)
 
-    fd = ti.field(dtype=ti.f32, shape=f.shape[0])
+    fd = ti.field(dtype=ti.f32, shape=len(f))
     fd.from_numpy(f_cd_cs_n[:, 0])
-    fs = ti.field(dtype=ti.f32, shape=f.shape[0])
+    fs = ti.field(dtype=ti.f32, shape=len(f))
     fs.from_numpy(f_cd_cs_n[:, 1])
-    fp = ti.field(dtype=ti.f32, shape=f.shape[0])
+    fp = ti.field(dtype=ti.f32, shape=len(f))
     fp.from_numpy(f_cd_cs_n[:, 2])
 
-    v1, v2, v3 = v[f[:, 0]], v[f[:, 1]], v[f[:, 2]]
-    fnn = np.cross(v2 - v1, v3 - v1)
-    fan = np.linalg.norm(fnn, axis=1) / 2
-    fnn = fnn / fan.reshape(-1, 1) / 2  # Normalizing
+    fnn = np.zeros((len(f), 3))
+
+    fan = np.zeros(len(f))
+
+    for i in range(len(f)):
+        for j in range(len(f[i])-2):
+            v1, v2, v3 = v[f[i][0+j]], v[f[i][1+j]], v[f[i][2+j]]
+            fnc = np.cross(v2 - v1, v3 - v1)
+            if j == 0:
+                fnn[i,:] = fnc
+                fnn[i,:] /= np.linalg.norm(fnn[i,:])
+            fan[i] += np.linalg.norm(fnc) / 2
 
     fa = ti.field(dtype=ti.f32, shape=fan.shape)
     fa.from_numpy(fan)

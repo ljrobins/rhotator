@@ -25,6 +25,7 @@ def direct_invert_attitude(
     loss_function: str = "l2",
     sigma_obs: np.ndarray = None,
     cache_size: int = 500,
+    finite_difference_step_size: float = 1e-3,
 ) -> pl.DataFrame:
     """Performs direct BFGS nonlinear optimization on initial conditions ``x0``
 
@@ -60,7 +61,7 @@ def direct_invert_attitude(
     from .core import propagate_one
 
     t1 = time.time()
-    res = tibfgs.minimize(propagate_one, x0, eps=1e-3)
+    res = tibfgs.minimize(propagate_one, x0, eps=finite_difference_step_size)
     t2 = time.time() - t1
     if verbose:
         print(
@@ -86,30 +87,6 @@ def compute_light_curves(x0s: np.ndarray) -> np.ndarray:
     _compute_light_curves(x0s_ti, lcs)
     return lcs.to_numpy()
 
-
-def generate_initial_states(
-    n_particles: int, dimx: int = 6, max_angular_velocity_mag: float = 0.3
-) -> np.ndarray:
-    try:
-        x0s = ti.field(dtype=ti.types.vector(n=dimx, dtype=ti.f32), shape=n_particles)
-    except ti.lang.exception.TaichiRuntimeError:
-        raise ValueError(
-            "tater.generate_initial_states() must be called after tater.initialize()"
-        )
-
-    from .core import gen_x0
-
-    @ti.kernel
-    def gen_x0s() -> int:
-        for i in x0s:
-            x0s[i] = gen_x0(x0s.shape[0], i, max_angular_velocity_mag)
-        return 0
-
-    gen_x0s()
-
-    return x0s.to_numpy()
-
-
 def initialize(
     obj_path: str,
     svi: np.ndarray,
@@ -127,7 +104,7 @@ def initialize(
     load_finfo(obj_path)
 
     os.environ["TATER_SELF_SHADOW"] = str(self_shadowing)
-    os.environ["TATER_DT"] = str(np.diff(epsecs[:2])[0])
+    os.environ["TATER_DT"] = str(np.mean(np.diff(epsecs)))
 
     if not loss_function in _LOSS_TYPES:
         raise ValueError(
@@ -151,7 +128,7 @@ def initialize(
                 "one or more sigma_obs[i] == 0, this will crash the solver"
             )
     load_lc_obs(lc_true, sigma_obs)
-    load_observation_geometry(svi, ovi)
+    load_observation_geometry(svi, ovi, cache_size)
     load_obj(obj_path)
 
     from .core import load_unshadowed_areas

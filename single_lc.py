@@ -14,11 +14,12 @@ ti.init(
     opt_level=1,
     fast_math=False,
     advanced_optimization=False,
+    unrolling_limit=0,
 )
 
 np.random.seed(2)
 
-t = np.linspace(0, 1, 30)
+t = np.linspace(0, 1, 100)
 lc_true = np.sin(10 * t) / 2 + 1 + np.random.normal(loc=np.zeros_like(t), scale=0.3)
 
 svi = np.tile(np.array([1.0, 0.0, 0.0]), (len(t), 1))
@@ -27,14 +28,14 @@ ovi = np.tile(np.array([np.sqrt(2) / 2, np.sqrt(2) / 2, 0.0]), (len(t), 1))
 
 obj_path = "/Users/liamrobinson/Documents/maintained-research/mirage-models/Non-Convex/irregular.obj"
 
+x0 = np.array([[0.0, 0.0, 0.0, -3.0, 3.0, 1.0]])
 x0s = tater.initialize(
     obj_path,
     svi,
     ovi,
+    t,
     lc_true,
-    max_angular_velocity_magnitude=0.2,
-    n_particles=1,
-    dimx=6,
+    x0=x0,
     self_shadowing=True,
     loss_function="log-likelihood",
     sigma_obs=0.5,
@@ -42,13 +43,15 @@ x0s = tater.initialize(
 
 from tater.core import compute_lc, compute_loss, sigma_obs
 
-x0 = ti.Vector([0.0, 0.0, 0.0, -3.0, 3.0, 1.0], dt=ti.float32)
-
+x0v = ti.Vector(x0[0])
 
 @ti.kernel
 def test() -> tuple[ti.types.vector(n=t.size, dtype=ti.f32), float]:
-    lc = compute_lc(x0)
+    lc = compute_lc(x0v)
     return lc, compute_loss(lc)
 
 
 lc, loss = test()
+
+plt.plot(t, lc)
+plt.show()
