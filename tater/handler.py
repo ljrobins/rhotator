@@ -26,6 +26,7 @@ def direct_invert_attitude(
     sigma_obs: np.ndarray = None,
     cache_size: int = 500,
     finite_difference_step_size: float = 1e-3,
+    iratios: np.ndarray = None,
 ) -> pl.DataFrame:
     """Performs direct BFGS nonlinear optimization on initial conditions ``x0``
 
@@ -45,6 +46,12 @@ def direct_invert_attitude(
     :rtype: pl.DataFrame
     """
 
+    if iratios is not None:
+        assert x0.shape[1] == 6, "If itensor is provided, only six state variables are allowed"
+        assert len(iratios) == 3 and iratios[0] == 1
+    else:
+        assert x0.shape[1] == 8, "If itensor is not provided, 8 state variables must be given"
+
     initialize(
         obj_file_path,
         svi,
@@ -56,6 +63,7 @@ def direct_invert_attitude(
         loss_function=loss_function,
         sigma_obs=sigma_obs,
         cache_size=cache_size,
+        iratios=iratios,
     )
 
     from .core import propagate_one
@@ -80,10 +88,10 @@ def compute_light_curves(x0s: np.ndarray) -> np.ndarray:
     x0s = np.atleast_2d(x0s)
 
     x0s_ti = ti.field(
-        dtype=ti.types.vector(n=x0s.shape[1], dtype=ti.f32), shape=x0s.shape[0]
+        dtype=ti.types.vector(n=x0s.shape[1], dtype=ti.f64), shape=x0s.shape[0]
     )
     x0s_ti.from_numpy(x0s)
-    lcs = ti.field(dtype=ti.types.vector(n=NTIMES, dtype=ti.f32), shape=x0s.shape[0])
+    lcs = ti.field(dtype=ti.types.vector(n=NTIMES, dtype=ti.f64), shape=x0s.shape[0])
     _compute_light_curves(x0s_ti, lcs)
     return lcs.to_numpy()
 
@@ -98,6 +106,7 @@ def initialize(
     loss_function: str = "l2",
     sigma_obs: np.ndarray = None,
     cache_size: int = 500,
+    iratios: list[float] | None = None,
 ):
     from ticlip.handler import load_finfo
 
@@ -116,7 +125,7 @@ def initialize(
     os.environ["TI_NUM_TIMES"] = str(lc_true.size)
     os.environ["TI_DIM_X"] = str(x0.shape[1])
 
-    from .core import load_lc_obs, load_observation_geometry, load_obj
+    from .core import load_lc_obs, load_observation_geometry, load_obj, load_itensor
 
     if loss_function == "log-likelihood":
         if sigma_obs is None:
@@ -130,6 +139,9 @@ def initialize(
     load_lc_obs(lc_true, sigma_obs)
     load_observation_geometry(svi, ovi, cache_size)
     load_obj(obj_path)
+
+    if iratios is not None:
+        load_itensor(iratios)
 
     from .core import load_unshadowed_areas
     from ticlip.handler import unshadowed_areas_handle

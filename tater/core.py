@@ -6,7 +6,7 @@ NSTATES = int(os.environ["TI_DIM_X"])
 NTIMES = int(os.environ["TI_NUM_TIMES"])
 LOSS_TYPE = int(os.environ["TATER_LOSS_TYPE"])
 SELF_SHADOWING = bool(os.environ["TATER_SELF_SHADOW"])
-h: ti.f32 = float(os.environ["TATER_DT"])
+h: ti.f64 = float(os.environ["TATER_DT"])
 
 SVI = ti.field(dtype=ti.math.vec3, shape=NTIMES)
 OVI = ti.field(dtype=ti.math.vec3, shape=NTIMES)
@@ -16,7 +16,7 @@ naz = None
 nel = None
 
 @ti.func
-def clip(x: ti.f32, min_v: ti.f32, max_v: ti.f32) -> ti.f32:
+def clip(x: ti.f64, min_v: ti.f64, max_v: ti.f64) -> ti.f64:
     v = x
     if x < min_v:
         v = min_v
@@ -73,7 +73,7 @@ def quat_to_mrp(q: ti.math.vec4) -> ti.math.vec3:
 def normalized_convex_light_curve(L: ti.math.vec3, O: ti.math.vec3) -> float:
     b = 0.0
 
-    uas = ti.types.vector(n=fn.shape[0], dtype=ti.f32)(0.0)
+    uas = ti.types.vector(n=fn.shape[0], dtype=ti.f64)(0.0)
     ti.loop_config(serialize=True)
     for i in range(fn.shape[0]):
         uas[i] = fa[i]
@@ -111,7 +111,7 @@ def brdf_blinn_phong(
     H = (L + O).normalized()
     D = (n + 2) / (2 * np.pi) * rdot(N, H) ** n
     denom = 4 * rdot(N, L) * rdot(N, O)
-    fr: ti.f32 = ti.math.nan
+    fr: ti.f64 = ti.math.nan
     if denom <= 1e-5:
         fr = 0.0
     else:
@@ -130,7 +130,7 @@ def brdf_phong(
     n: float,
 ) -> float:
     NdL = ti.math.dot(N, L)
-    fr: ti.f32 = ti.math.nan
+    fr: ti.f64 = ti.math.nan
     if NdL <= 1e-5:
         fr = 0.0
     if ti.math.isnan(fr):
@@ -159,11 +159,12 @@ def compute_lc(x0: ti.template()) -> ti.template():
         itens.y = ti.abs(x0[6])
     if ti.static(x0.n > 7):
         itens.z = ti.abs(x0[7])
+    
 
     # print('INERTIA TENSOR: ', itens)
     # print('x0: ', x0)
 
-    lc = ti.types.vector(n=NTIMES, dtype=ti.f32)(0.0)
+    lc = ti.types.vector(n=NTIMES, dtype=ti.f64)(0.0)
     ti.loop_config(serialize=True)
     for j in range(lc.n):
         # print("TIMESTEP", j)
@@ -278,7 +279,7 @@ def state_derivative_quat(x, itensor):
 
 
 @ti.func
-def compute_loss(lc: ti.template()) -> ti.f32:
+def compute_loss(lc: ti.template()) -> ti.f64:
     loss = 0.0
 
     if LOSS_TYPE == 2:
@@ -303,7 +304,7 @@ def compute_loss(lc: ti.template()) -> ti.f32:
 
 
 @ti.func
-def propagate_one(x0: ti.template()) -> ti.f32:
+def propagate_one(x0: ti.template()) -> ti.f64:
     lc = compute_lc(x0)
     loss = compute_loss(lc)
     return loss
@@ -322,10 +323,10 @@ lc_obs_norm = None
 
 def load_lc_obs(lc_arr: np.ndarray, sigma: np.ndarray):
     global lc_obs, lc_obs_norm, sigma_obs
-    lc_obs = ti.types.vector(n=NTIMES, dtype=ti.f32)(lc_arr)
+    lc_obs = ti.types.vector(n=NTIMES, dtype=ti.f64)(lc_arr)
     lc_obs_norm = np.linalg.norm(lc_obs[~np.isnan(lc_obs)])
     if sigma is not None:
-        sigma_obs = ti.types.vector(n=NTIMES, dtype=ti.f32)(sigma)
+        sigma_obs = ti.types.vector(n=NTIMES, dtype=ti.f64)(sigma)
     else:
         sigma_obs = 0 * lc_obs
 
@@ -351,8 +352,8 @@ def load_observation_geometry(svi: np.ndarray, ovi: np.ndarray, cache_size: int)
         np.linalg.norm(ovi, axis=1), 1.0
     ), "Make sure ovi rows are normalized!"
 
-    SVI.from_numpy(svi.astype(np.float32))
-    OVI.from_numpy(ovi.astype(np.float32))
+    SVI.from_numpy(svi.astype(np.float64))
+    OVI.from_numpy(ovi.astype(np.float64))
 
 
 def load_mtllib(mtllib_path: str) -> dict:
@@ -383,9 +384,13 @@ def load_mtllib(mtllib_path: str) -> dict:
                         )
     return materials
 
+def load_itensor(iratios: list[float]) -> None:
+    global itensor
+    for i,v in enumerate(iratios):
+        itensor[i] = v
 
 def load_obj(obj_path: str) -> None:
-    global fa, fn, fd, fs, fp, itensor
+    global fa, fn, fd, fs, fp
 
     obj_dir = os.path.split(obj_path)[0]
     with open(obj_path, "r") as f:
@@ -436,15 +441,15 @@ def load_obj(obj_path: str) -> None:
                 f_cd_cs_n.append(
                     [current_mat["cd"], current_mat["cs"], current_mat["n"]]
                 )
-    f_cd_cs_n = np.array(f_cd_cs_n, dtype=np.float32)
+    f_cd_cs_n = np.array(f_cd_cs_n, dtype=np.float64)
 
-    v = np.array(v, dtype=np.float32)
+    v = np.array(v, dtype=np.float64)
 
-    fd = ti.field(dtype=ti.f32, shape=len(f))
+    fd = ti.field(dtype=ti.f64, shape=len(f))
     fd.from_numpy(f_cd_cs_n[:, 0])
-    fs = ti.field(dtype=ti.f32, shape=len(f))
+    fs = ti.field(dtype=ti.f64, shape=len(f))
     fs.from_numpy(f_cd_cs_n[:, 1])
-    fp = ti.field(dtype=ti.f32, shape=len(f))
+    fp = ti.field(dtype=ti.f64, shape=len(f))
     fp.from_numpy(f_cd_cs_n[:, 2])
 
     fnn = np.zeros((len(f), 3))
@@ -460,10 +465,10 @@ def load_obj(obj_path: str) -> None:
                 fnn[i,:] /= np.linalg.norm(fnn[i,:])
             fan[i] += np.linalg.norm(fnc) / 2
 
-    fa = ti.field(dtype=ti.f32, shape=fan.shape)
+    fa = ti.field(dtype=ti.f64, shape=fan.shape)
     fa.from_numpy(fan)
 
-    fn = ti.Vector.field(n=3, dtype=ti.f32, shape=fnn.shape[0])
+    fn = ti.Vector.field(n=3, dtype=ti.f64, shape=fnn.shape[0])
     fn.from_numpy(fnn)
 
     # print(fa, fp, fs, fd)
