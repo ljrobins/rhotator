@@ -11,3 +11,4 @@ pyvenv.cfg
 ticache
 .ticache
 *.parquet
+.venv

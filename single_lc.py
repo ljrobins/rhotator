@@ -45,6 +45,7 @@ from tater.core import compute_lc, compute_loss, sigma_obs
 
 x0v = ti.Vector(x0[0])
 
+
 @ti.kernel
 def test() -> tuple[ti.types.vector(n=t.size, dtype=ti.f64), float]:
     lc = compute_lc(x0v)

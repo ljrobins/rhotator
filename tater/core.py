@@ -6,14 +6,15 @@ NSTATES = int(os.environ["TI_DIM_X"])
 NTIMES = int(os.environ["TI_NUM_TIMES"])
 LOSS_TYPE = int(os.environ["TATER_LOSS_TYPE"])
 SELF_SHADOWING = bool(os.environ["TATER_SELF_SHADOW"])
-h: ti.f64 = float(os.environ["TATER_DT"])
 
 SVI = ti.field(dtype=ti.math.vec3, shape=NTIMES)
 OVI = ti.field(dtype=ti.math.vec3, shape=NTIMES)
+HS = ti.field(dtype=ti.f64, shape=NTIMES - 1)
 
 itensor = ti.Vector([1.0, 2.0, 3.0])
 naz = None
 nel = None
+
 
 @ti.func
 def clip(x: ti.f64, min_v: ti.f64, max_v: ti.f64) -> ti.f64:
@@ -70,7 +71,20 @@ def quat_to_mrp(q: ti.math.vec4) -> ti.math.vec3:
 
 
 @ti.func
-def normalized_convex_light_curve(L: ti.math.vec3, O: ti.math.vec3) -> float:
+def normalized_convex_light_curve(
+    L: ti.math.vec3,
+    O: ti.math.vec3,
+    cs_factor: ti.f64,
+    n_factor: ti.f64,
+    cs_scale: ti.f64,
+    n_scale: ti.f64,
+    cds: ti.template(),
+    css: ti.template(),
+    ns: ti.template(),
+    save_g: bool,
+    x_ind: int,
+    t_ind: int,
+) -> float:
     b = 0.0
 
     uas = ti.types.vector(n=fn.shape[0], dtype=ti.f64)(0.0)
@@ -78,19 +92,35 @@ def normalized_convex_light_curve(L: ti.math.vec3, O: ti.math.vec3) -> float:
     for i in range(fn.shape[0]):
         uas[i] = fa[i]
 
+    # print(uas)
     if SELF_SHADOWING:
         saz, sel = cart_to_sph(L)
         oaz, oel = cart_to_sph(O)
         uas = unshadowed_areas(oaz, oel, saz, sel, naz, nel)
 
+    # print(uas)
     ti.loop_config(serialize=True)
     for i in range(fn.shape[0]):
         ndo = rdot(fn[i], O)
         ndl = rdot(fn[i], L)
 
         if ndo > 0 and ndl > 0:
-            fr = brdf_blinn_phong(L, O, fn[i], fd[i], fs[i], fp[i])
-            ti.atomic_add(b, uas[i] * fr * ndo * ndl)
+            cs = 0.0
+            n = 0.0
+            if cs_scale > 1:
+                cs = css[i] * cs_scale ** ti.math.sin(ti.math.pi / 2 * cs_factor)
+            else:
+                cs = css[i] * (1 + cs_scale * ti.math.sin(ti.math.pi / 2 * cs_factor))
+            if n_scale > 1:
+                n = ns[i] * n_scale ** ti.math.sin(ti.math.pi / 2 * n_factor)
+            else:
+                n = ns[i] * (1 + n_scale * ti.math.sin(ti.math.pi / 2 * n_factor))
+
+            fr = brdf_blinn_phong(L, O, fn[i], cds[i], cs, n)
+            contrib = uas[i] * fr * ndo * ndl
+            if save_g:
+                g[x_ind, i, t_ind] = contrib
+            ti.atomic_add(b, contrib)
     return b
 
 
@@ -115,8 +145,7 @@ def brdf_blinn_phong(
     if denom <= 1e-5:
         fr = 0.0
     else:
-        fd = cd / ti.math.pi
-        fr = fd + cs * D / denom
+        fr = cd / ti.math.pi + cs * D / denom
     return fr
 
 
@@ -152,14 +181,59 @@ def cart_to_sph(v: ti.math.vec3) -> ti.math.vec2:
 
 
 @ti.func
-def compute_lc(x0: ti.template()) -> ti.template():
+def compute_lc(
+    x0: ti.template(),
+    vary_itensor: ti.u1,
+    vary_global_mats: ti.u1,
+    substeps: int,
+    cs_scale: ti.f64,
+    n_scale: ti.f64,
+    i_scale: ti.f64,
+    cds: ti.template(),
+    css: ti.template(),
+    ns: ti.template(),
+    save_g: bool,
+    x_ind: int,
+) -> ti.template():
     current_state = x0
     itens = itensor
-    if ti.static(x0.n > 6):
-        itens.y = ti.abs(x0[6])
-    if ti.static(x0.n > 7):
-        itens.z = ti.abs(x0[7])
-    
+
+    itens_y_factor = 0.0
+    itens_z_factor = 0.0
+    cs_factor = 0.0
+    n_factor = 0.0
+
+    if vary_itensor and not vary_global_mats:
+        if ti.static(x0.n > 6):
+            itens_y_factor = x0[6]
+        if ti.static(x0.n > 7):
+            itens_z_factor = x0[7]
+    elif not vary_itensor and vary_global_mats:
+        if ti.static(x0.n > 6):
+            cs_factor = x0[6]
+        if ti.static(x0.n > 7):
+            n_factor = x0[7]
+    elif vary_itensor and vary_global_mats:
+        if ti.static(x0.n > 6):
+            itens_y_factor = x0[6]
+        if ti.static(x0.n > 7):
+            itens_z_factor = x0[7]
+        if ti.static(x0.n > 8):
+            cs_factor = x0[8]
+        if ti.static(x0.n > 9):
+            n_factor = x0[9]
+
+    if vary_itensor:
+        if i_scale > 1:
+            itens.y = itens.y * i_scale ** ti.math.sin(ti.math.pi / 2 * itens_y_factor)
+            itens.z = itens.z * i_scale ** ti.math.sin(ti.math.pi / 2 * itens_z_factor)
+        else:
+            itens.y = itens.y * (
+                1 + i_scale * ti.math.sin(ti.math.pi / 2 * itens_y_factor)
+            )
+            itens.z = itens.z * (
+                1 + i_scale * ti.math.sin(ti.math.pi / 2 * itens_z_factor)
+            )
 
     # print('INERTIA TENSOR: ', itens)
     # print('x0: ', x0)
@@ -168,23 +242,145 @@ def compute_lc(x0: ti.template()) -> ti.template():
     ti.loop_config(serialize=True)
     for j in range(lc.n):
         # print("TIMESTEP", j)
-        dcm = mrp_to_dcm(current_state[:3])
-        svb = dcm @ SVI[j]
-        ovb = dcm @ OVI[j]
-        # print(j, 'h:', h, 'SVB:', svb)
-        lc[j] = normalized_convex_light_curve(svb, ovb)
-        if j < lc.n - 1:  # if this isnt the last step
-            current_state = rk4_step(current_state, h, itens)
+        ti.loop_config(serialize=True)
+        for k in range(substeps):
+            dcm = mrp_to_dcm(current_state[:3])
+            svb = dcm @ SVI[j]
+            ovb = dcm @ OVI[j]
+            # print(j, 'h:', h, 'SVB:', svb)
+            contrib = (
+                normalized_convex_light_curve(
+                    svb,
+                    ovb,
+                    cs_factor,
+                    n_factor,
+                    cs_scale,
+                    n_scale,
+                    cds,
+                    css,
+                    ns,
+                    save_g,
+                    x_ind,
+                    j,
+                )
+                / substeps
+            )
+
+            ti.atomic_add(lc[j], contrib)
+            prev_current_state = current_state
+            if j < lc.n - 1:  # if this isnt the last step
+                current_state = rk4_step(current_state, HS[j] / substeps, itens)
+            if ti.math.isnan(current_state).sum() > 0:
+                print(f"MAYDAY: NAN STATE AT {(j+k/substeps)/lc.n}: {current_state}")
+                print(f"    prev current: {prev_current_state}")
     return lc
 
 
 @ti.func
 def rk4_step(x0, h, itensor):
+    # Compute |H| initial (correct with squares)
+    H_norm = ti.math.sqrt(
+        (itensor[0] * x0[3]) ** 2
+        + (itensor[1] * x0[4]) ** 2
+        + (itensor[2] * x0[5]) ** 2
+    )
+
+    # RK4 integration
     k1 = h * state_derivative_mrp(x0, itensor)
     k2 = h * state_derivative_mrp(x0 + k1 / 2, itensor)
     k3 = h * state_derivative_mrp(x0 + k2 / 2, itensor)
     k4 = h * state_derivative_mrp(x0 + k3, itensor)
-    return x0 + k1 / 6 + k2 / 3 + k3 / 3 + k4 / 6
+    new_state = x0 + (k1 + 2 * k2 + 2 * k3 + k4) / 6
+
+    # Compute |H| new
+    H_norm_new = ti.math.sqrt(
+        (itensor[0] * new_state[3]) ** 2
+        + (itensor[1] * new_state[4]) ** 2
+        + (itensor[2] * new_state[5]) ** 2
+    )
+
+    # Rescale angular velocity
+    new_h = itensor * new_state[3:6]
+    new_h = new_h * (H_norm / H_norm_new)
+    new_state[3:6] = new_h / itensor
+
+    new_s2 = new_state[0] ** 2 + new_state[1] ** 2 + new_state[2] ** 2
+    # shadow set switching, if we need to
+    if new_s2 > 1.0:
+        # Doing switching if we've passed outside of the unit sphere!
+        new_state[:3] = -new_state[:3] / new_s2
+
+    return new_state
+
+
+@ti.func
+def rk5_nystrom_step(x0, h, itensor):
+    # Stage 1
+    ks1 = h * state_derivative_mrp(x0, itensor)
+
+    # Stage 2
+    ks2 = h * state_derivative_mrp(x0 + (1.0 / 3.0) * ks1, itensor)
+
+    # Stage 3
+    ks3 = h * state_derivative_mrp(
+        x0 + (4.0 / 25.0) * ks1 + (6.0 / 25.0) * ks2, itensor
+    )
+
+    # Stage 4
+    ks4 = h * state_derivative_mrp(
+        x0 + (1.0 / 4.0) * ks1 - 3.0 * ks2 + (15.0 / 4.0) * ks3, itensor
+    )
+
+    # Stage 5
+    ks5 = h * state_derivative_mrp(
+        x0
+        + (2.0 / 27.0) * ks1
+        + (10.0 / 9.0) * ks2
+        - (50.0 / 81.0) * ks3
+        + (8.0 / 81.0) * ks4,
+        itensor,
+    )
+
+    # Stage 6
+    ks6 = h * state_derivative_mrp(
+        x0
+        + (2.0 / 25.0) * ks1
+        + (12.0 / 25.0) * ks2
+        + (2.0 / 15.0) * ks3
+        + (8.0 / 75.0) * ks4,
+        itensor,
+    )
+
+    # Final combination (weighted sum)
+    new_state = x0 + (
+        (23.0 / 192.0) * ks1
+        + (125.0 / 192.0) * ks3
+        + (-27.0 / 64.0) * ks5
+        + (125.0 / 192.0) * ks6
+    )
+
+    # Angular momentum rescaling
+    H_norm = ti.math.sqrt(
+        (itensor[0] * x0[3]) ** 2
+        + (itensor[1] * x0[4]) ** 2
+        + (itensor[2] * x0[5]) ** 2
+    )
+    H_norm_new = ti.math.sqrt(
+        (itensor[0] * new_state[3]) ** 2
+        + (itensor[1] * new_state[4]) ** 2
+        + (itensor[2] * new_state[5]) ** 2
+    )
+
+    new_h = itensor * new_state[3:6]
+    new_h = new_h * (H_norm / H_norm_new)
+    new_state[3:6] = new_h / itensor
+
+    # Shadow set switching
+    new_s2 = new_state[0] ** 2 + new_state[1] ** 2 + new_state[2] ** 2
+    if new_s2 > 1.0:
+        new_state[:3] = -new_state[:3] / new_s2
+
+    return new_state
 
 
 @ti.func
@@ -288,33 +484,207 @@ def compute_loss(lc: ti.template()) -> ti.f64:
         loss = ti.acos(clip(dp, -1.0, 1.0))
     elif LOSS_TYPE == 1:
         # Negative log-likelihood
-        lc = lc / lc.norm() * lc_obs_norm # Force est to have same magnitude as
+        lc = lc / lc.norm() * lc_obs_norm  # Force est to have same magnitude as
         ti.loop_config(serialize=True)
         for i in range(lc.n):
             if ~ti.math.isnan(sigma_obs[i]) and ~ti.math.isnan(lc_obs[i]):
-                loss = loss + ti.log(sigma_obs[i]) + 1 / 2 * ((lc[i] - lc_obs[i]) / sigma_obs[i]) ** 2
+                loss = (
+                    loss
+                    + 1 / 2 * ti.log(2 * ti.math.pi)
+                    + ti.log(sigma_obs[i])
+                    + 1 / 2 * ((lc[i] - lc_obs[i]) / sigma_obs[i]) ** 2
+                )
         loss = loss / lc.n
 
     elif LOSS_TYPE == 0:
         # L2 norm error
-        lc = lc / lc.norm() * lc_obs_norm # Force est to have same magnitude as
+        lc = lc / lc.norm() * lc_obs_norm  # Force est to have same magnitude as
         loss = (lc - lc_obs).norm_sqr()  # L2 error
 
     return loss
 
 
 @ti.func
-def propagate_one(x0: ti.template()) -> ti.f64:
-    lc = compute_lc(x0)
+def propagate_one(
+    x0: ti.template(),
+    vary_itensor: ti.u1,
+    vary_global_mats: ti.u1,
+    substeps: int,
+    cs_scale: ti.f64,
+    n_scale: ti.f64,
+    i_scale: ti.f64,
+) -> ti.f64:
+    lc = compute_lc(
+        x0,
+        vary_itensor,
+        vary_global_mats,
+        substeps,
+        cs_scale,
+        n_scale,
+        i_scale,
+        fd,
+        fs,
+        fp,
+        False,
+        0,
+    )
     loss = compute_loss(lc)
     return loss
 
 
 @ti.kernel
-def _compute_light_curves(x0s: ti.template(), lcs: ti.template()) -> int:
+def _compute_light_curves(
+    x0s: ti.template(),
+    lcs: ti.template(),
+    vary_itensor: ti.u1,
+    vary_global_mats: ti.u1,
+    substeps: int,
+    cs_scale: ti.f64,
+    n_scale: ti.f64,
+    i_scale: ti.f64,
+) -> int:
     for i in x0s:
-        lcs[i] = compute_lc(x0s[i])
+        lcs[i] = compute_lc(
+            x0s[i],
+            vary_itensor,
+            vary_global_mats,
+            substeps,
+            cs_scale,
+            n_scale,
+            i_scale,
+            fd,
+            fs,
+            fp,
+            False,
+            0,
+        )
     return 0
+
+
+@ti.kernel
+def _compute_material_sensitivity(
+    x0s: ti.template(),
+    vary_itensor: ti.u1,
+    vary_global_mats: ti.u1,
+    substeps: int,
+    cs_scale: ti.f64,
+    n_scale: ti.f64,
+    i_scale: ti.f64,
+    eps: ti.f64,
+) -> ti.int32:
+    print('Material sens starting...')
+    ti.loop_config(serialize=True)
+    for i in range(x0s.shape[0]):
+        print(f'MS: {i}/{x0s.shape[0]}')
+        for s1 in range(2):
+            x1sign: ti.f64 = -1 + 2 * float(s1)
+            for s2 in range(2):
+                x2sign: ti.f64 = -1 + 2 * float(s2)
+                for l in range(len(x0s[i])):
+                    for j in range(l, len(x0s[i])):
+                        x0s[i][l] += x1sign * eps
+                        x0s[i][j] += x2sign * eps
+
+                        v = compute_loss(
+                            compute_lc(
+                                x0s[i],
+                                vary_itensor,
+                                vary_global_mats,
+                                substeps,
+                                cs_scale,
+                                n_scale,
+                                i_scale,
+                                fd,
+                                fs,
+                                fp,
+                                False,
+                                0,
+                            )
+                        )
+
+                        h[i, s1, s2, l, j] = v
+                        h[i, s1, s2, j, l] = v
+
+                        x0s[i][l] -= x1sign * eps
+                        x0s[i][j] -= x2sign * eps
+
+    ti.loop_config(serialize=True)
+    for i in range(x0s.shape[0]):
+        # print(f"{i=}")
+        for xs in range(2):
+            # positive or negative perturbations
+            xsign: ti.f64 = -1 + 2 * float(xs)
+            for ts in range(2):
+                tsign: ti.f64 = -1 + 2 * float(ts)
+                for l in range(len(x0s[i])):
+                    # print(f"{l=}")
+                    for j in range(fd.shape[0]):
+                        for k in range(3):
+                            # once for each of the variables we have to change
+                            if k == 0:
+                                fd[j] += tsign * eps
+                            elif k == 1:
+                                fs[j] += tsign * eps
+                            elif k == 2:
+                                fp[j] += tsign * eps
+                            x0s[i][l] += xsign * eps
+
+                            m[i, xs, ts, l, j, k] = compute_loss(
+                                compute_lc(
+                                    x0s[i],
+                                    vary_itensor,
+                                    vary_global_mats,
+                                    substeps,
+                                    cs_scale,
+                                    n_scale,
+                                    i_scale,
+                                    fd,
+                                    fs,
+                                    fp,
+                                    False,
+                                    0,
+                                )
+                            )
+
+                            if k == 0:
+                                fd[j] -= tsign * eps
+                            elif k == 1:
+                                fs[j] -= tsign * eps
+                            elif k == 2:
+                                fp[j] -= tsign * eps
+                            x0s[i][l] -= xsign * eps
+    return 0
+
+
+@ti.kernel
+def _compute_g_matrix(
+    x0s: ti.template(),
+    vary_itensor: ti.u1,
+    vary_global_mats: ti.u1,
+    substeps: int,
+    cs_scale: ti.f64,
+    n_scale: ti.f64,
+    i_scale: ti.f64,
+) -> int:
+    ti.loop_config(serialize=True)
+    for i in range(x0s.shape[0]):
+        # print(f"{i=}")
+        compute_lc(
+            x0s[i],
+            vary_itensor,
+            vary_global_mats,
+            substeps,
+            cs_scale,
+            n_scale,
+            i_scale,
+            fd,
+            fs,
+            fp,
+            True,
+            i,
+        )
+    return 0
+
 
 lc_obs = None
 sigma_obs = None
@@ -331,7 +701,9 @@ def load_lc_obs(lc_arr: np.ndarray, sigma: np.ndarray):
         sigma_obs = 0 * lc_obs
 
 
-def load_observation_geometry(svi: np.ndarray, ovi: np.ndarray, cache_size: int) -> None:
+def load_observation_geometry(
+    svi: np.ndarray, ovi: np.ndarray, cache_size: int, hs: np.ndarray
+) -> None:
     global SVI, OVI, naz, nel
     naz = cache_size
     nel = cache_size
@@ -354,6 +726,7 @@ def load_observation_geometry(svi: np.ndarray, ovi: np.ndarray, cache_size: int)
 
     SVI.from_numpy(svi.astype(np.float64))
     OVI.from_numpy(ovi.astype(np.float64))
+    HS.from_numpy(hs)
 
 
 def load_mtllib(mtllib_path: str) -> dict:
@@ -384,13 +757,32 @@ def load_mtllib(mtllib_path: str) -> dict:
                         )
     return materials
 
+
 def load_itensor(iratios: list[float]) -> None:
     global itensor
-    for i,v in enumerate(iratios):
+    assert len(iratios) == 3, "required to provide all xyz entries"
+    for i, v in enumerate(iratios):
         itensor[i] = v
 
+
+def set_fd(fd_np: np.ndarray) -> None:
+    global fd
+    fd.from_numpy(fd_np)
+
+
+def set_fs(fs_np: np.ndarray) -> None:
+    global fs
+    fs.from_numpy(fs_np)
+
+
+def set_fp(fp_np: np.ndarray) -> None:
+    global fp
+    fp.from_numpy(fp_np)
+
+mats = []
+
 def load_obj(obj_path: str) -> None:
-    global fa, fn, fd, fs, fp
+    global fa, fn, fd, fs, fp, mats
 
     obj_dir = os.path.split(obj_path)[0]
     with open(obj_path, "r") as f:
@@ -441,6 +833,7 @@ def load_obj(obj_path: str) -> None:
                 f_cd_cs_n.append(
                     [current_mat["cd"], current_mat["cs"], current_mat["n"]]
                 )
+                mats.append(current_mat_name)
     f_cd_cs_n = np.array(f_cd_cs_n, dtype=np.float64)
 
     v = np.array(v, dtype=np.float64)
@@ -457,12 +850,12 @@ def load_obj(obj_path: str) -> None:
     fan = np.zeros(len(f))
 
     for i in range(len(f)):
-        for j in range(len(f[i])-2):
-            v1, v2, v3 = v[f[i][0+j]], v[f[i][1+j]], v[f[i][2+j]]
+        for j in range(len(f[i]) - 2):
+            v1, v2, v3 = v[f[i][0 + j]], v[f[i][1 + j]], v[f[i][2 + j]]
             fnc = np.cross(v2 - v1, v3 - v1)
             if j == 0:
-                fnn[i,:] = fnc
-                fnn[i,:] /= np.linalg.norm(fnn[i,:])
+                fnn[i, :] = fnc
+                fnn[i, :] /= np.linalg.norm(fnn[i, :])
             fan[i] += np.linalg.norm(fnc) / 2
 
     fa = ti.field(dtype=ti.f64, shape=fan.shape)
@@ -480,3 +873,47 @@ unshadowed_areas = None
 def load_unshadowed_areas(fcn) -> None:
     global unshadowed_areas
     unshadowed_areas = fcn
+
+
+def load_g(_g: ti.field) -> None:
+    global g
+    g = _g
+
+
+def get_g() -> np.ndarray:
+    global g
+    return g.to_numpy()
+
+
+def load_m(_m: ti.field) -> None:
+    global m
+    m = _m
+
+
+def get_m() -> np.ndarray:
+    global m
+    return m.to_numpy()
+
+
+def load_h(_h: ti.field) -> None:
+    global h
+    h = _h
+
+
+def get_h() -> np.ndarray:
+    global h
+    return h.to_numpy()
+
+def get_fd() -> np.ndarray:
+    global fd
+    return fd.to_numpy()
+
+
+def get_fs() -> np.ndarray:
+    global fs
+    return fs.to_numpy()
+
+
+def get_fp() -> np.ndarray:
+    global fp
+    return fp.to_numpy()

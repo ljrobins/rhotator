@@ -4,6 +4,7 @@ import os
 import polars as pl
 import time
 import tibfgs
+import taichi as ti
 
 _LOSS_TYPES = [
     "l2",
@@ -27,6 +28,12 @@ def direct_invert_attitude(
     cache_size: int = 500,
     finite_difference_step_size: float = 1e-3,
     iratios: np.ndarray = None,
+    vary_itensor: bool = False,
+    vary_global_mats: bool = False,
+    substeps: int = 1,
+    cs_scale: float = 0,
+    n_scale: float = 0,
+    i_scale: float = 0,
 ) -> pl.DataFrame:
     """Performs direct BFGS nonlinear optimization on initial conditions ``x0``
 
@@ -46,11 +53,22 @@ def direct_invert_attitude(
     :rtype: pl.DataFrame
     """
 
-    if iratios is not None:
-        assert x0.shape[1] == 6, "If itensor is provided, only six state variables are allowed"
-        assert len(iratios) == 3 and iratios[0] == 1
-    else:
-        assert x0.shape[1] == 8, "If itensor is not provided, 8 state variables must be given"
+    required_state_variables = 6 + 2 * vary_itensor + 2 * vary_global_mats
+
+    assert x0.shape[1] == required_state_variables, ""
+    assert cs_scale >= 0.0
+    assert n_scale >= 0.0
+    assert i_scale >= 0.0
+
+    if required_state_variables == 6:
+        assert (
+            iratios is not None
+        ), "If only six state variables are provided, iratios must be specified as [3,]"
+
+    epmax = epsecs.max()
+    x0[:, 3:6] *= epmax
+    epsecs_old = epsecs.copy()
+    epsecs = epsecs / epmax
 
     initialize(
         obj_file_path,
@@ -66,24 +84,97 @@ def direct_invert_attitude(
         iratios=iratios,
     )
 
-    from .core import propagate_one
+    from .core import propagate_one, load_g, mats
+
+    # this might be extra?
+    g = ti.field(
+        dtype=ti.f64,
+        shape=(x0.shape[0], len(mats), len(epsecs)),
+    )
+    load_g(g)
+
+    @ti.func
+    def f(x: ti.template()) -> ti.f64:
+        return propagate_one(
+            x, vary_itensor, vary_global_mats, substeps, cs_scale, n_scale, i_scale
+        )
 
     t1 = time.time()
-    res = tibfgs.minimize(propagate_one, x0, eps=finite_difference_step_size)
+    res = tibfgs.minimize(f, x0, eps=finite_difference_step_size)
     t2 = time.time() - t1
     if verbose:
         print(
             f"Optimizing {n_particles} over {len(lc_true)} data points took {t2-t1:.2f} seconds"
         )
-    lcs = compute_light_curves(res["xk"].to_numpy())
+    lcs = compute_light_curves(
+        res["xk"].to_numpy(),
+        vary_itensor,
+        vary_global_mats,
+        substeps,
+        cs_scale,
+        n_scale,
+        i_scale,
+        compute_material_sensitivity=False,
+    )['lcs'].astype(np.float32)
+    lcs = (
+        lcs
+        / np.linalg.norm(lcs, axis=1, keepdims=True)
+        * np.linalg.norm(lc_true[~np.isnan(lc_true)])
+    )
+
     res = res.with_columns(lcs=lcs)
+    
     if remove_nans:
         res = res.sort("fun").filter(pl.col("fun").is_not_nan())
+
+    for c in ["x0", "xk"]:
+        x = res[c].to_numpy().copy()
+        x[:, 3:6] /= epmax
+        res = res.with_columns(pl.Series(name=c, values=x))
+    
+    from .core import get_fd, get_fs, get_fp
+
+    res = res.with_columns(
+        pl.Series("epsecs", res.height * [epsecs_old.astype(np.float32)]),
+        pl.Series('obj_file_path', res.height * [obj_file_path]),
+        pl.Series('substeps', res.height * [substeps]),
+        pl.Series('self_shadowing', res.height * [self_shadowing]),
+        pl.Series('vary_global_mats', res.height * [vary_global_mats]),
+        pl.Series('vary_itensor', res.height * [vary_itensor]),
+        pl.Series('cache_size', res.height * [cache_size]),
+        pl.Series('cs_scale', res.height * [cs_scale]),
+        pl.Series('n_scale', res.height * [n_scale]),
+        pl.Series('i_scale', res.height * [i_scale]),
+        pl.Series('iratios', res.height * [np.array(iratios, dtype=np.float32)]),
+        pl.Series('finite_difference_step_size', res.height * [finite_difference_step_size]),
+        pl.Series('mats', res.height * [mats]),
+        pl.Series('cds', res.height * [get_fd()]),
+        pl.Series('css', res.height * [get_fs()]),
+        pl.Series('ns', res.height * [get_fp()]),
+    )
+
     return res
 
 
-def compute_light_curves(x0s: np.ndarray) -> np.ndarray:
-    from .core import _compute_light_curves, NTIMES
+def compute_light_curves(
+    x0s: np.ndarray,
+    vary_itensor: bool,
+    vary_global_mats: bool,
+    substeps: int,
+    cs_scale: float,
+    n_scale: float,
+    i_scale: float,
+    compute_material_sensitivity: bool,
+    return_g: bool = False,
+    material_eps: float = 1e-4,
+) -> np.ndarray:
+    from .core import (
+        _compute_light_curves,
+        _compute_g_matrix,
+        _compute_material_sensitivity,
+        NTIMES,
+        fd,
+    )
 
     x0s = np.atleast_2d(x0s)
 
@@ -92,8 +183,117 @@ def compute_light_curves(x0s: np.ndarray) -> np.ndarray:
     )
     x0s_ti.from_numpy(x0s)
     lcs = ti.field(dtype=ti.types.vector(n=NTIMES, dtype=ti.f64), shape=x0s.shape[0])
-    _compute_light_curves(x0s_ti, lcs)
-    return lcs.to_numpy()
+
+    from .core import load_g, get_g, load_m, get_m, load_h, get_h
+
+    g = ti.field(
+        dtype=ti.f64,
+        shape=(x0s.shape[0], fd.shape[0], NTIMES),
+    )
+    load_g(g)
+
+    m = ti.field(
+        dtype=ti.f64,
+        shape=(x0s.shape[0], 2, 2, x0s.shape[1], fd.shape[0], 3),
+    )
+    load_m(m)
+
+    h = ti.field(
+        dtype=ti.f64,
+        shape=(x0s.shape[0], 2, 2, x0s.shape[1], x0s.shape[1]),
+    )
+    load_h(h)
+
+    _compute_light_curves(
+        x0s_ti,
+        lcs,
+        vary_itensor,
+        vary_global_mats,
+        substeps,
+        cs_scale,
+        n_scale,
+        i_scale,
+    )
+
+    ret_dict = dict(lcs=lcs.to_numpy())
+
+    if return_g:
+        _compute_g_matrix(
+            x0s_ti,
+            vary_itensor,
+            vary_global_mats,
+            substeps,
+            cs_scale,
+            n_scale,
+            i_scale,
+        )
+        ret_dict['g'] = get_g()
+
+    if compute_material_sensitivity:
+        _compute_material_sensitivity(
+            x0s_ti,
+            vary_itensor,
+            vary_global_mats,
+            substeps,
+            cs_scale,
+            n_scale,
+            i_scale,
+            material_eps,
+        )
+        m, h = get_m(), get_h()
+
+        # m: num ics, \pmx, \pmtheta, num x, num faces, num coefs
+        # h: num ics, \pmx1, \pmx2, num x, num x
+
+        H_x_x = np.zeros(
+            (
+                h.shape[0],  # number of ics
+                h.shape[-2],  # number of x states
+                h.shape[-1],  # number of x states
+            )
+        )
+
+        for i in range(H_x_x.shape[0]):
+            for j in range(H_x_x.shape[1]):
+                for k in range(H_x_x.shape[2]):
+                    # +pp -mp -pm +mm
+                    pp = h[i, 1, 1, j, k]
+                    mp = h[i, 0, 1, j, k]
+                    pm = h[i, 1, 0, j, k]
+                    mm = h[i, 0, 0, j, k]
+                    H_x_x[i, j, k] = 1 / (4 * material_eps**2) * (pp - pm - mp + mm)
+
+        H_x_theta = np.zeros(
+            (
+                m.shape[0],  # number of ics
+                m.shape[-3],  # number of x states
+                m.shape[-2] * m.shape[-1],  # number of parameters (3 * number of faces)
+            )
+        )
+
+        for i in range(H_x_theta.shape[0]):
+            for j in range(H_x_theta.shape[1]):
+                for k in range(H_x_theta.shape[2]):
+                    # +pp -mp -pm +mm
+                    face_ind = k // 3  # which face?
+                    coef_ind = k % 3  # which coeffient?
+                    pp = m[i, 1, 1, j, face_ind, coef_ind]
+                    mp = m[i, 0, 1, j, face_ind, coef_ind]
+                    pm = m[i, 1, 0, j, face_ind, coef_ind]
+                    mm = m[i, 0, 0, j, face_ind, coef_ind]
+                    H_x_theta[i, j, k] = 1 / (4 * material_eps**2) * (pp - pm - mp + mm)
+
+        dxhat_dtheta = np.zeros_like(H_x_theta)
+
+        for i in range(H_x_theta.shape[0]):
+            dxhat_dtheta[i] = -np.linalg.inv(H_x_x[i]) @ H_x_theta[i]
+
+        ret_dict['dxhat_dtheta'] = dxhat_dtheta
+        ret_dict['H_x_x'] = H_x_x
+        ret_dict['H_x_theta'] = H_x_theta
+
+    return ret_dict
+
 
 def initialize(
     obj_path: str,
@@ -103,17 +303,16 @@ def initialize(
     lc_true: np.ndarray,
     x0: np.ndarray,
     self_shadowing: bool = False,
-    loss_function: str = "l2",
+    loss_function: str = "log-likelihood",
     sigma_obs: np.ndarray = None,
     cache_size: int = 500,
     iratios: list[float] | None = None,
 ):
     from ticlip.handler import load_finfo
 
-    load_finfo(obj_path)
+    FINFOFIELD = load_finfo(obj_path)
 
     os.environ["TATER_SELF_SHADOW"] = str(self_shadowing)
-    os.environ["TATER_DT"] = str(np.mean(np.diff(epsecs)))
 
     if not loss_function in _LOSS_TYPES:
         raise ValueError(
@@ -137,7 +336,7 @@ def initialize(
                 "one or more sigma_obs[i] == 0, this will crash the solver"
             )
     load_lc_obs(lc_true, sigma_obs)
-    load_observation_geometry(svi, ovi, cache_size)
+    load_observation_geometry(svi, ovi, cache_size, hs=np.diff(epsecs))
     load_obj(obj_path)
 
     if iratios is not None:
@@ -153,3 +352,11 @@ def initialize(
     cache = gen_cache(
         cache_size, cache_size, empty=not self_shadowing
     )  # Only fill the cache if we're using self-shadowing
+
+    return FINFOFIELD
+
+
+def get_material_types() -> list[str]:
+    from .core import mats
+
+    return mats
